@@ -1,0 +1,1 @@
+"""Assistente da Barbearia Imperial."""

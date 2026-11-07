@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "barbearia-imperial-bot"
+version = "0.1.0"
+description = "Assistente de atendimento e agendamento para a Barbearia Imperial"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "fastapi[standard]>=0.115,<1.0",
+  "streamlit>=1.40,<2.0",
+  "requests>=2.32,<3.0",
+  "python-dotenv>=1.0,<2.0",
+  "tzdata>=2024.1",
+  "langchain>=1.0,<2.0",
+  "langgraph>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
+  "langchain-chroma>=1.0,<2.0",
+  "langchain-text-splitters>=1.0,<2.0",
+  "tiktoken>=0.7,<1.0",
+  "pytest>=8.0,<9.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
