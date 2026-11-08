@@ -10,6 +10,8 @@ Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedê
 
 Em **Meus horários**, informe o telefone e o código privado do comprovante para consultar, remarcar ou cancelar uma reserva. Cada código dá acesso a uma única reserva. Use **Agendar** para criar reservas. O chat ajuda com informações e disponibilidade.
 
+O [plano de automação de atendimento](docs/plano-automacao.md) descreve as próximas entregas para o chat do site, a área privada da equipe e o WhatsApp.
+
 ## Executar localmente
 
 Use Python 3.11 ou 3.12. A opção recomendada é `uv`, que usa o arquivo `uv.lock` para instalar as mesmas versões em Windows, macOS e Linux e pode baixar uma versão compatível do Python quando necessário:

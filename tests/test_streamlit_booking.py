@@ -43,6 +43,32 @@ def has_contact_fields(ui):
     return any(widget.label == "Seu nome" for widget in ui.text_input)
 
 
+def test_floating_chat_preserves_booking_and_shares_conversation(booking_app, monkeypatch):
+    ui, _ = booking_app
+    selected_slot = choose_slot(ui)
+    messages_sent = []
+
+    def answer_chat(url, *, json, timeout):
+        assert url.endswith("/chat")
+        messages_sent.append(json["messages"][-1]["content"])
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{"answer":"Temos corte de cabelo."}'
+        return response
+
+    monkeypatch.setattr(requests, "post", answer_chat)
+    button(ui, "Conversar").click().run()
+    ui.chat_input(key="floating_chat_input").set_value("Quais os serviços?").run()
+    button(ui, "Fechar conversa").click().run()
+    assert all(widget.key != "floating_chat_input" for widget in ui.chat_input)
+    assert any(item.value == "Temos corte de cabelo." for item in ui.markdown)
+    button(ui, "Conversar").click().run()
+    assert ui.chat_input(key="floating_chat_input")
+    assert ui.selectbox(key="booking_slot").value == selected_slot
+    assert messages_sent == ["Quais os serviços?"]
+    assert not ui.exception
+
+
 def next_open_days():
     today = datetime.now(TZ).date()
     days = [today + timedelta(days=offset) for offset in (1, 2, 3)]
@@ -132,8 +158,16 @@ def test_first_screen_starts_rendering_after_catalog_is_ready(monkeypatch):
     assert events == [*first_render, "title"]
 
 
-def test_booking_shows_receipt_and_persists_across_reruns(booking_app):
+def test_booking_shows_receipt_and_persists_across_reruns(booking_app, monkeypatch):
     ui, api = booking_app
+    downloads = []
+    download_button = st.download_button
+
+    def capture_download(label, data, **kwargs):
+        downloads.append((label, data, kwargs["file_name"]))
+        return download_button(label, data, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", capture_download)
     slot = choose_slot(ui)
     ui.text_input(key="booking_name").input("Cliente Teste")
     ui.text_input(key="booking_phone").input("16999990000").run()
@@ -143,6 +177,12 @@ def test_booking_shows_receipt_and_persists_across_reruns(booking_app):
     assert any(element.value == code for element in ui.code)
     record = customer_booking(api, {"access_code": code})
     assert record["starts_at"] == slot["starts_at"]
+    label, content, filename = downloads[-1]
+    assert label == "Salvar comprovante"
+    assert filename == f"reserva-imperial-{record['id']}.txt"
+    for detail in (record["service"], record["barber"], code, "R$ 50,00", "40 min"):
+        assert detail in content
+    assert "16999990000" not in content
     ui.run()
     assert any(message.value == "Agendamento confirmado!" for message in ui.success)
     assert any(f"#{record['id']}" in message.value for message in ui.markdown)

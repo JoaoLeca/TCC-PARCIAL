@@ -15,12 +15,33 @@ MONTHS = ("Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "
           "Setembro", "Outubro", "Novembro", "Dezembro")
 
 
-def show_booking_details(booking):
+def booking_detail_rows(booking):
     start = datetime.fromisoformat(booking["starts_at"])
     end = datetime.fromisoformat(booking["ends_at"])
     duration = (end - start) // timedelta(minutes=1)
-    st.write(f"{booking['service']} com {booking['barber']}")
-    st.write(f"{start:%d/%m/%Y} às {start:%Hh%M} · {duration} min · {format_price(booking['price'])}")
+    return (
+        ("Serviço", booking["service"]),
+        ("Barbeiro", booking["barber"]),
+        ("Data e horário", f"{WEEKDAYS[start.weekday()]}, {start:%d/%m/%Y} às {start:%Hh%M}"),
+        ("Duração", f"{duration} min"),
+        ("Valor", format_price(booking["price"])),
+    )
+
+
+def show_booking_details(booking):
+    details = dict(booking_detail_rows(booking))
+    st.write(f"{details['Serviço']} com {details['Barbeiro']}")
+    st.write(f"{details['Data e horário']} · {details['Duração']} · {details['Valor']}")
+
+
+def receipt_text(booking, shop_name):
+    details = "\n".join(f"{label} — {value}" for label, value in booking_detail_rows(booking))
+    return (
+        f"{shop_name}\nComprovante da reserva #{booking['id']}\n\n{details}\n\n"
+        f"Código privado de acesso\n{booking['access_code']}\n\n"
+        "Em Meus horários, use o telefone informado na reserva e este código privado.\n"
+        "Guarde o comprovante em um local seguro.\n"
+    )
 
 
 def get_booking_data(endpoint, params=None, *, api_url=API):
@@ -80,16 +101,22 @@ def render_booking_calendar(dates_and_slots, first_day, last_day):
     return chosen_date
 
 
-def render_booking(catalog):
+def render_booking(catalog, shop_name):
     state = st.session_state
     if receipt := state.get("booking_receipt"):
         st.success("Agendamento confirmado!")
         st.markdown(f"**Código da reserva #{receipt['id']}**")
         show_booking_details(receipt)
-        st.markdown("**Código privado de acesso**")
-        st.code(receipt["access_code"], language=None)
-        st.caption("Guarde o código. Use-o com seu telefone em Meus horários. Se precisar de outro, fale com a equipe.")
-        if st.button("Novo agendamento"):
+        with st.container(key="booking_receipt_code", border=True):
+            st.markdown("**Código privado de acesso**")
+            st.code(receipt["access_code"], language=None)
+            st.caption("Use o telefone da reserva e este código em Meus horários. O comprovante inclui o código. Guarde-o em um local seguro.")
+            st.download_button(
+                "Salvar comprovante", receipt_text(receipt, shop_name),
+                file_name=f"reserva-imperial-{receipt['id']}.txt", mime="text/plain; charset=utf-8",
+                on_click="ignore", icon=":material/download:", width="stretch",
+            )
+        if st.button("Novo agendamento", type="tertiary"):
             del state.booking_receipt
             st.rerun()
         return
@@ -179,9 +206,14 @@ def render_booking(catalog):
     if phone and not valid_phone:
         st.caption("Informe um telefone com DDD e pelo menos 10 dígitos.")
 
-    st.markdown("## 3. Revise e confirme")
-    show_booking_details({**slot, "service": service["name"], "price": service["price"]})
-    if not st.button("Confirmar agendamento", type="primary", disabled=not (name and valid_phone)):
+    with st.container(key="booking_review", border=True):
+        st.markdown("### 3. Revise e confirme")
+        show_booking_details({**slot, "service": service["name"], "price": service["price"]})
+        if not (name and valid_phone):
+            st.caption("Preencha seu nome e telefone para confirmar.")
+        confirmed = st.button("Confirmar agendamento", type="primary", width="stretch",
+                              disabled=not (name and valid_phone))
+    if not confirmed:
         return
 
     payload = {
@@ -363,6 +395,65 @@ def render_managed_bookings():
                 st.rerun()
 
 
+def show_chat_message(role, content):
+    with st.chat_message(role):
+        st.caption("Você" if role == "user" else "Assistente virtual")
+        if role == "user":
+            st.text(content)
+        else:
+            st.markdown(content)
+
+
+def render_chat(surface, shop_name, *, compact=False):
+    state = st.session_state
+    with st.container(key=f"{surface}_chat_heading"):
+        st.markdown("### Atendimento")
+        st.caption(f"Assistente virtual · {shop_name}")
+    history = st.container(key=f"{surface}_chat_history", height=250 if compact else 320,
+                           border=False, autoscroll=True)
+    with history:
+        if not state.messages:
+            show_chat_message("assistant", "Olá! Posso ajudar com serviços, preços e horários da barbearia.")
+        for message in state.messages:
+            show_chat_message(message["role"], message["content"])
+    prompt = st.chat_input("Escreva sua mensagem", key=f"{surface}_chat_input")
+    st.caption("Para reservar, use Agendar. Use o código privado em Meus horários.")
+    if not prompt or not prompt.strip():
+        return
+    state.messages.append({"role": "user", "content": prompt})
+    with history:
+        show_chat_message("user", prompt)
+        with st.chat_message("assistant"):
+            st.caption("Assistente virtual")
+            with st.spinner("Consultando o atendimento…"):
+                answer = request_chat_answer(state.session_id, state.messages)
+    state.messages.append({"role": "assistant", "content": answer})
+    st.rerun()
+
+
+def request_chat_answer(session_id, messages):
+    try:
+        response = requests.post(f"{API}/chat", json={"session_id": session_id, "messages": messages}, timeout=90)
+        response.raise_for_status()
+        return response.json()["answer"]
+    except requests.RequestException:
+        return "O assistente virtual está indisponível agora. Você pode usar Agendar ou consultar a aba Informações."
+
+
+def render_floating_chat(shop_name):
+    state = st.session_state
+    opened = state.get("floating_chat_open", False)
+    with st.container(key="imperial_chat_dock"):
+        st.button(
+            "Fechar conversa" if opened else "Conversar", key="floating_chat_toggle", type="primary",
+            icon=":material/close:" if opened else ":material/chat:",
+            on_click=state.__setitem__, args=("floating_chat_open", not opened),
+        )
+        if opened:
+            with st.container(key="imperial_chat_panel", border=True):
+                render_chat("floating", shop_name, compact=True)
+
+
 catalog = None
 try:
     catalog = get_booking_catalog(API)
@@ -409,6 +500,90 @@ st.html("""
     border-color: transparent;
     background: transparent;
   }
+  .st-key-imperial_chat_dock {
+    --chat-edge: clamp(0.75rem, 2vw, 1.5rem);
+    position: fixed;
+    z-index: 100;
+    right: calc(var(--chat-edge) + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--chat-edge) + env(safe-area-inset-bottom, 0px));
+    width: max-content !important;
+  }
+  .st-key-floating_chat_toggle button {
+    min-height: 44px;
+    border-radius: 999px;
+    padding-inline: 1rem;
+    box-shadow: 0 4px 16px #0004;
+  }
+  .st-key-imperial_chat_panel {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.65rem);
+    width: min(23rem, calc(100vw - 2 * var(--chat-edge) - env(safe-area-inset-right, 0px))) !important;
+    max-width: none;
+    max-height: calc(100vh - 5.5rem);
+    max-height: calc(100dvh - 5.5rem - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: #191715;
+    background: light-dark(#fff, #191715);
+    box-shadow: 0 12px 36px #0005;
+  }
+  :is(.st-key-floating_chat_heading, .st-key-tab_chat_heading) {
+    gap: 0.85rem;
+    padding-bottom: 0.65rem;
+    border-bottom: 1px solid light-dark(#e5d9dc, #473c3e);
+  }
+  :is(.st-key-floating_chat_heading, .st-key-tab_chat_heading) h3 {
+    padding: 0;
+    font-size: 1.25rem;
+    line-height: 1.25;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) {
+    padding: 0.7rem;
+    gap: 0.6rem;
+    border-radius: 0.65rem;
+    background: light-dark(#f8f5f5, #201c1c);
+    overscroll-behavior: contain;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stChatMessage"] {
+    width: fit-content;
+    max-width: min(90%, 30rem);
+    margin-inline-end: auto;
+    padding: 0.55rem 0.75rem;
+    border-radius: 1rem 1rem 1rem 0.25rem;
+    background: light-dark(#eee8e8, #312b2b);
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history)
+    [data-testid="stChatMessage"]:has(> [aria-label="Chat message from user"]) {
+    margin-inline: auto 0;
+    border-radius: 1rem 1rem 0.25rem 1rem;
+    background: light-dark(#f6dce3, #772c40);
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stChatMessage"] > :first-child:not([data-testid="stChatMessageContent"]) {
+    display: none;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stChatMessageContent"] {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stChatMessageContent"] > [data-testid="stVerticalBlock"] {
+    gap: 0.15rem;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stChatMessageContent"] [data-testid="stCaptionContainer"] p {
+    color: inherit;
+    font-weight: 650;
+    font-size: 0.72rem;
+  }
+  :is(.st-key-floating_chat_history, .st-key-tab_chat_history) [data-testid="stText"] {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .st-key-floating_chat_history {
+    height: clamp(7rem, 36dvh, 15.625rem) !important;
+  }
+  [data-testid="stMainBlockContainer"]:has(.st-key-imperial_chat_dock) {
+    padding-bottom: max(5rem, calc(4.5rem + env(safe-area-inset-bottom, 0px)));
+  }
   @supports selector(:has(*)) {
     @keyframes imperial-reveal { to { visibility: visible; opacity: 1; pointer-events: auto; } }
     [data-testid="stMainBlockContainer"]:not(:has(#imperial-ready)):not(
@@ -431,28 +606,14 @@ if "session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-tab_book, tab_manage, tab_info, tab_chat = st.tabs(["Agendar", "Meus horários", "Informações", "Conversar"])
+tab_book, tab_manage, tab_info, tab_chat = st.tabs(
+    ["Agendar", "Meus horários", "Informações", "Conversar"], key="public_section", on_change="rerun",
+)
 with tab_book:
-    render_booking(catalog)
+    render_booking(catalog, shop_name)
 with tab_chat:
-    st.caption("Use Agendar para fazer uma reserva e Meus horários para consultar ou alterar. Digite seu código privado apenas em Meus horários.")
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-    prompt = st.chat_input("Pergunte sobre serviços, horários ou políticas")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            try:
-                response = requests.post(f"{API}/chat", json={"session_id": st.session_state.session_id, "messages": st.session_state.messages}, timeout=90)
-                response.raise_for_status()
-                answer = response.json()["answer"]
-            except requests.RequestException as exc:
-                answer = f"Não consegui acessar o atendimento agora: {exc}. Use a aba Agendar ou tente novamente."
-            st.markdown(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+    with st.container(key="imperial_chat_tab", border=True):
+        render_chat("tab", shop_name)
 with tab_manage:
     render_managed_bookings()
 
@@ -481,6 +642,9 @@ with tab_info:
                 st.write(f"{barber['name']} · {days}")
     else:
         st.info("As informações estão temporariamente indisponíveis.")
+
+if not tab_chat.open:
+    render_floating_chat(shop_name)
 
 # O formulário libera a primeira tela quando o serviço, o barbeiro e a consulta de vagas aparecem.
 # Comprovante e estados sem catálogo usam o marcador porque não têm esses controles.
