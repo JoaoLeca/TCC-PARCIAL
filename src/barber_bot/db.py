@@ -19,11 +19,18 @@ PACKAGES = [
 ]
 
 
+def phone_key(value: str) -> str:
+    value = value.strip()
+    digits = value.translate(str.maketrans("", "", " ()+.-\t\r\n"))
+    return digits if digits.isascii() and digits.isdecimal() else value
+
+
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
     db_path = Path(path) if path else DATABASE_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.create_function("phone_key", 1, phone_key, deterministic=True)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn

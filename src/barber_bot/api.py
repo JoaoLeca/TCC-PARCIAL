@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from time import perf_counter
 from barber_bot.db import initialize_database, connect
-from barber_bot.schedule import BookingError, availability, list_services, list_barbers, create_appointment, find_appointments, cancel_appointment, reschedule_appointment
+from barber_bot.schedule import BookingError, availability, list_services, list_barbers, create_appointment, find_appointments, cancel_appointment, reschedule_appointment, reschedule_options
 from barber_bot.assistant import run_agent
 from barber_bot.config import OPENAI_API_KEY
 
@@ -84,6 +84,14 @@ class RescheduleIn(BaseModel):
     phone: str
     new_starts_at: str
     confirmed: bool = False
+
+
+@app.get("/appointments/{appointment_id}/reschedule-options")
+def get_reschedule_options(appointment_id: int, phone: str, appointment_date: date):
+    try:
+        return reschedule_options(appointment_id, phone, appointment_date)
+    except BookingError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.post("/appointments/{appointment_id}/reschedule")

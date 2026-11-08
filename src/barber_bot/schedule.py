@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from barber_bot.config import MIN_BOOKING_DAYS, MAX_BOOKING_DAYS, TIMEZONE
-from barber_bot.db import connect
+from barber_bot.db import connect, phone_key
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo(TIMEZONE)
@@ -52,14 +52,17 @@ def _validate_window(start: datetime, duration: int, days_range: bool = True) ->
     return start + timedelta(minutes=duration)
 
 
-def availability(service_id: int, appointment_date: date, barber_id: int | None = None, path: str | Path | None = None) -> list[dict]:
+def availability(service_id: int, appointment_date: date, barber_id: int | None = None, path: str | Path | None = None, *, exclude_appointment_id: int | None = None) -> list[dict]:
     with connect(path) as conn:
         service = conn.execute("SELECT * FROM services WHERE id=?", (service_id,)).fetchone()
         if not service:
             raise BookingError("Serviço não encontrado.")
         query = "SELECT * FROM barbers" + (" WHERE id=?" if barber_id else "")
         barbers = conn.execute(query, (barber_id,) if barber_id else ()).fetchall()
-        busy = conn.execute("SELECT barber_id,starts_at,ends_at FROM appointments WHERE status='confirmed' AND date(starts_at)=?", (appointment_date.isoformat(),)).fetchall()
+        busy = conn.execute(
+            "SELECT barber_id,starts_at,ends_at FROM appointments WHERE status='confirmed' AND date(starts_at)=? AND id IS NOT ?",
+            (appointment_date.isoformat(), exclude_appointment_id),
+        ).fetchall()
     now = datetime.now(TZ)
     days_ahead = (appointment_date - now.date()).days
     if not (MIN_BOOKING_DAYS <= days_ahead <= MAX_BOOKING_DAYS):
@@ -108,7 +111,7 @@ def create_appointment(customer_name: str, customer_phone: str, service_id: int,
 
 def find_appointments(customer_phone: str, path: str | Path | None = None) -> list[dict]:
     with connect(path) as conn:
-        rows = conn.execute("SELECT a.*,b.name AS barber,s.name AS service,s.price FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id WHERE a.customer_phone=? ORDER BY a.starts_at", (customer_phone.strip(),)).fetchall()
+        rows = conn.execute("SELECT a.*,b.name AS barber,s.name AS service,s.price FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id WHERE phone_key(a.customer_phone)=? ORDER BY a.starts_at", (phone_key(customer_phone),)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -116,7 +119,8 @@ def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool
     if not confirmed:
         raise BookingError("Peça confirmação explícita antes de cancelar o agendamento.")
     with connect(path) as conn:
-        row = conn.execute("SELECT * FROM appointments WHERE id=? AND customer_phone=? AND status='confirmed'", (appointment_id, customer_phone.strip())).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM appointments WHERE id=? AND phone_key(customer_phone)=? AND status='confirmed'", (appointment_id, phone_key(customer_phone))).fetchone()
         if not row:
             raise BookingError("Agendamento ativo não encontrado para esse telefone.")
         start = _parse_start(row["starts_at"])
@@ -126,18 +130,34 @@ def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool
         return {"id": appointment_id, "status": "cancelled"}
 
 
+def _reschedulable_booking(conn, appointment_id, customer_phone):
+    booking = conn.execute(
+        "SELECT * FROM appointments WHERE id=? AND phone_key(customer_phone)=? AND status='confirmed'",
+        (appointment_id, phone_key(customer_phone)),
+    ).fetchone()
+    if not booking:
+        raise BookingError("Agendamento ativo não encontrado para esse telefone.")
+    if _parse_start(booking["starts_at"]) - datetime.now(TZ) < timedelta(hours=3):
+        raise BookingError("A remarcação precisa ser feita com pelo menos 3 horas de antecedência.")
+    return booking
+
+
+def reschedule_options(appointment_id: int, customer_phone: str, appointment_date: date, path: str | Path | None = None) -> list[dict]:
+    with connect(path) as conn:
+        booking = _reschedulable_booking(conn, appointment_id, customer_phone)
+    slots = availability(booking["service_id"], appointment_date, booking["barber_id"], path,
+                         exclude_appointment_id=appointment_id)
+    current_start = _parse_start(booking["starts_at"]).isoformat()
+    return [slot for slot in slots if slot["starts_at"] != current_start]
+
+
 def reschedule_appointment(appointment_id: int, customer_phone: str, new_starts_at: str, confirmed: bool, path: str | Path | None = None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita da pessoa antes de remarcar.")
     start = _parse_start(new_starts_at)
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        old = conn.execute("SELECT * FROM appointments WHERE id=? AND customer_phone=? AND status='confirmed'", (appointment_id, customer_phone.strip())).fetchone()
-        if not old:
-            raise BookingError("Agendamento ativo não encontrado para esse telefone.")
-        old_start = _parse_start(old["starts_at"])
-        if old_start - datetime.now(TZ) < timedelta(hours=3):
-            raise BookingError("A remarcação precisa ser feita com pelo menos 3 horas de antecedência.")
+        old = _reschedulable_booking(conn, appointment_id, customer_phone)
         service = conn.execute("SELECT * FROM services WHERE id=?", (old["service_id"],)).fetchone()
         barber = conn.execute("SELECT * FROM barbers WHERE id=?", (old["barber_id"],)).fetchone()
         end = _validate_window(start, service["duration_minutes"])
