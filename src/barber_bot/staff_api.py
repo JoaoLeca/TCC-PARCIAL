@@ -10,7 +10,7 @@ from barber_bot.db import connect
 from barber_bot.operations import create_block, list_blocks, remove_block, update_shop, update_working_days
 from barber_bot.schedule import (
     TZ, BookingError, _parse_start, availability, cancel_appointment, create_appointment,
-    reschedule_appointment, reschedule_options,
+    replace_access_code, reschedule_appointment, reschedule_options,
 )
 from barber_bot.staff import StaffMember, authenticate, get_staff_member, revoke_session
 
@@ -162,6 +162,16 @@ def staff_availability(service_id: int, day: date, member: Staff, barber_id: int
         return availability(service_id, day, barber_id, days_range=False)
     except BookingError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@protected.post("/appointments/{appointment_id}/access-code")
+def staff_replace_access_code(appointment_id: int, payload: ConfirmationIn, member: Staff):
+    if not payload.confirmed:
+        raise HTTPException(409, "Confirme a identidade do cliente antes de emitir um código.")
+    code = replace_access_code(appointment_id, member.barber_id)
+    if code is None:
+        raise HTTPException(404, "Agendamento não encontrado.")
+    return {"access_code": code}
 
 
 @protected.post("/appointments", status_code=201)

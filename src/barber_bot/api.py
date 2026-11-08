@@ -1,10 +1,16 @@
 from datetime import date
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, SecretStr
 from time import perf_counter
+import re
+from typing import Literal
 from barber_bot.db import initialize_database, connect
-from barber_bot.schedule import BookingError, availability, list_services, list_barbers, create_appointment, find_appointments, cancel_appointment, reschedule_appointment, reschedule_options
+from barber_bot.schedule import (
+    BookingAccessError, BookingError, availability, cancel_appointment, create_appointment,
+    get_customer_appointment, list_barbers, list_services, reschedule_appointment, reschedule_options,
+)
 from barber_bot.assistant import run_agent
 from barber_bot.config import OPENAI_API_KEY
 from barber_bot.operations import shop_profile
@@ -31,9 +37,14 @@ class BookingIn(BaseModel):
     expected_duration: int | None = Field(default=None, gt=0)
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ChatIn(BaseModel):
     session_id: str
-    messages: list[dict]
+    messages: list[ChatMessage]
 
 
 @app.get("/health")
@@ -69,54 +80,62 @@ def get_availability(service_id: int, appointment_date: date, barber_id: int | N
         raise HTTPException(400, str(exc))
 
 
-@app.post("/appointments")
+def no_store(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+
+
+@app.exception_handler(BookingError)
+def booking_error(_request: Request, exc: BookingError):
+    status = 404 if isinstance(exc, BookingAccessError) else 409
+    return JSONResponse(status_code=status, content={"detail": str(exc)}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/appointments", dependencies=[Depends(no_store)])
 def book(payload: BookingIn):
-    try:
-        return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
-                                  payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
-                                  expected_duration=payload.expected_duration)
-    except BookingError as exc:
-        raise HTTPException(409, str(exc))
+    return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
+                              payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
+                              expected_duration=payload.expected_duration)
 
 
-@app.get("/appointments")
-def appointments(phone: str):
-    return find_appointments(phone)
+class CustomerAccessIn(BaseModel):
+    phone: str = Field(min_length=8, max_length=30)
+    access_code: SecretStr
 
 
-class CancelIn(BaseModel):
-    phone: str
+@app.post("/appointments/lookup", dependencies=[Depends(no_store)])
+def appointments(payload: CustomerAccessIn):
+    return get_customer_appointment(payload.phone, payload.access_code.get_secret_value())
+
+
+class CancelIn(CustomerAccessIn):
     confirmed: bool = False
 
 
-@app.post("/appointments/{appointment_id}/cancel")
+@app.post("/appointments/{appointment_id}/cancel", dependencies=[Depends(no_store)])
 def cancel(appointment_id: int, payload: CancelIn):
-    try:
-        return cancel_appointment(appointment_id, payload.phone, payload.confirmed)
-    except BookingError as exc:
-        raise HTTPException(409, str(exc))
+    return cancel_appointment(appointment_id, payload.phone, payload.confirmed,
+                              access_code=payload.access_code.get_secret_value())
 
 
-class RescheduleIn(BaseModel):
-    phone: str
+class RescheduleOptionsIn(CustomerAccessIn):
+    appointment_date: date
+
+
+@app.post("/appointments/{appointment_id}/reschedule-options", dependencies=[Depends(no_store)])
+def get_reschedule_options(appointment_id: int, payload: RescheduleOptionsIn):
+    return reschedule_options(appointment_id, payload.phone, payload.appointment_date,
+                              access_code=payload.access_code.get_secret_value())
+
+
+class RescheduleIn(CustomerAccessIn):
     new_starts_at: str
     confirmed: bool = False
 
 
-@app.get("/appointments/{appointment_id}/reschedule-options")
-def get_reschedule_options(appointment_id: int, phone: str, appointment_date: date):
-    try:
-        return reschedule_options(appointment_id, phone, appointment_date)
-    except BookingError as exc:
-        raise HTTPException(409, str(exc))
-
-
-@app.post("/appointments/{appointment_id}/reschedule")
+@app.post("/appointments/{appointment_id}/reschedule", dependencies=[Depends(no_store)])
 def reschedule(appointment_id: int, payload: RescheduleIn):
-    try:
-        return reschedule_appointment(appointment_id, payload.phone, payload.new_starts_at, payload.confirmed)
-    except BookingError as exc:
-        raise HTTPException(409, str(exc))
+    return reschedule_appointment(appointment_id, payload.phone, payload.new_starts_at, payload.confirmed,
+                                  access_code=payload.access_code.get_secret_value())
 
 
 @app.post("/chat")
@@ -125,9 +144,13 @@ def chat(payload: ChatIn):
     if not OPENAI_API_KEY:
         raise HTTPException(503, "O chat com GPT está desativado. Configure OPENAI_API_KEY no arquivo .env.")
     try:
-        result = run_agent(payload.messages)
+        messages = [
+            {"role": message.role, "content": re.sub(r"BI-[A-Za-z0-9_-]{24}", "[código privado]", message.content)}
+            for message in payload.messages
+        ]
+        result = run_agent(messages)
         elapsed = round((perf_counter() - started) * 1000)
-        user_message = next((m.get("content", "") for m in reversed(payload.messages) if m.get("role") == "user"), "")
+        user_message = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         with connect() as conn:
             conn.execute("INSERT INTO interaction_logs(session_id,user_message,intent,tools_called,outcome,latency_ms) VALUES (?,?,?,?,?,?)", (payload.session_id, user_message, result["intent"], ",".join(result["tools_called"]), "escalated" if result["intent"] == "atendimento_humano" else "answered", elapsed))
         return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"], "latency_ms": elapsed}

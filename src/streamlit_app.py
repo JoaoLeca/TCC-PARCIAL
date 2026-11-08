@@ -86,7 +86,9 @@ def render_booking(catalog):
         st.success("Agendamento confirmado!")
         st.markdown(f"**Código da reserva #{receipt['id']}**")
         show_booking_details(receipt)
-        st.markdown("Use a aba **Meus horários** para consultar sua reserva.")
+        st.markdown("**Código privado de acesso**")
+        st.code(receipt["access_code"], language=None)
+        st.caption("Guarde o código. Use-o com seu telefone em Meus horários. Se precisar de outro, fale com a equipe.")
         if st.button("Novo agendamento"):
             del state.booking_receipt
             st.rerun()
@@ -204,9 +206,28 @@ def render_booking(catalog):
     st.rerun()
 
 
-def update_managed_booking(record, phone, action, new_start=None):
+def request_managed_booking(endpoint, payload):
+    response = requests.post(f"{API}/{endpoint}", json=payload, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def clear_managed_booking():
+    for key in ("manage_credentials", "manage_records", "manage_action", "manage_slots", "manage_notice"):
+        st.session_state.pop(key, None)
+
+
+def handle_management_error(exc, message):
+    if exc.response is not None and exc.response.status_code == 404:
+        clear_managed_booking()
+        st.session_state.manage_notice = ("warning", "Telefone ou código privado inválido. Confira os dados ou fale com a equipe.")
+        st.rerun()
+    st.error(message)
+
+
+def update_managed_booking(record, credentials, action, new_start=None):
     state = st.session_state
-    payload = {"phone": phone, "confirmed": True}
+    payload = {**credentials, "confirmed": True}
     if new_start is not None:
         payload["new_starts_at"] = new_start
     try:
@@ -214,12 +235,12 @@ def update_managed_booking(record, phone, action, new_start=None):
         if result.status_code == 409:
             state.manage_notice = ("warning", result.json()["detail"])
             state.pop("manage_slots", None)
-            state.manage_records = get_booking_data("appointments", {"phone": phone})
+            state.manage_records = [request_managed_booking("appointments/lookup", credentials)]
             st.rerun()
         result.raise_for_status()
         record.update(result.json())
-    except requests.RequestException:
-        st.error("Não foi possível verificar a alteração. Consulte suas reservas novamente antes de tentar outra vez.")
+    except requests.RequestException as exc:
+        handle_management_error(exc, "Não foi possível verificar a alteração. Consulte a reserva novamente antes de tentar outra vez.")
         return
 
     state.manage_records.sort(key=lambda item: item["starts_at"])
@@ -229,7 +250,7 @@ def update_managed_booking(record, phone, action, new_start=None):
     st.rerun()
 
 
-def render_reschedule(record, phone, today):
+def render_reschedule(record, credentials, today):
     state = st.session_state
     appointment_id = record["id"]
     first_day = today + timedelta(days=MIN_BOOKING_DAYS)
@@ -250,11 +271,11 @@ def render_reschedule(record, phone, today):
         state.pop("manage_slots", None)
         state.pop(slot_key, None)
         try:
-            slots = get_booking_data(f"appointments/{appointment_id}/reschedule-options", {
-                "phone": phone, "appointment_date": new_date.isoformat(),
+            slots = request_managed_booking(f"appointments/{appointment_id}/reschedule-options", {
+                **credentials, "appointment_date": new_date.isoformat(),
             })
-        except requests.RequestException:
-            st.error("Não foi possível buscar novos horários. Tente novamente.")
+        except requests.RequestException as exc:
+            handle_management_error(exc, "Não foi possível buscar novos horários. Tente novamente.")
             return
         state.manage_slots = (search, slots)
 
@@ -269,27 +290,30 @@ def render_reschedule(record, phone, today):
     )
     if st.button("Confirmar remarcação", key=f"confirm_reschedule_{appointment_id}",
                  type="primary", disabled=slot is None):
-        update_managed_booking(record, phone, "reschedule", slot["starts_at"])
+        update_managed_booking(record, credentials, "reschedule", slot["starts_at"])
 
 
 def render_managed_bookings():
     state = st.session_state
-    st.subheader("Consultar seus agendamentos")
-    with st.form("lookup_appointments"):
+    st.subheader("Consultar uma reserva")
+    st.caption("Use o telefone da reserva e o código privado do comprovante. Se perdeu o código ou reservou antes dessa mudança, fale com a equipe.")
+    with st.form("lookup_appointments", clear_on_submit=True):
         phone = st.text_input("Telefone usado no agendamento", key="lookup_phone",
-                              placeholder="(16) 99999-9999").strip()
+                              placeholder="(16) 99999-9999", max_chars=30).strip()
+        code = st.text_input("Código privado de acesso", key="lookup_code", type="password",
+                             max_chars=64).strip()
         lookup = st.form_submit_button("Consultar", type="primary")
     if lookup:
-        for key in ("manage_phone", "manage_records", "manage_action", "manage_slots", "manage_notice"):
-            state.pop(key, None)
-        if not phone:
-            st.info("Informe o telefone com DDD usado na reserva.")
+        clear_managed_booking()
+        if not phone or not code:
+            st.info("Informe o telefone com DDD e o código privado da reserva.")
             return
+        credentials = {"phone": phone, "access_code": code}
         try:
-            state.manage_records = get_booking_data("appointments", {"phone": phone})
-            state.manage_phone = phone
-        except requests.RequestException:
-            st.error("Não foi possível consultar suas reservas. Tente novamente.")
+            state.manage_records = [request_managed_booking("appointments/lookup", credentials)]
+            state.manage_credentials = credentials
+        except requests.RequestException as exc:
+            handle_management_error(exc, "Não foi possível consultar a reserva. Confira os dados ou tente novamente.")
             return
 
     notice = state.pop("manage_notice", None)
@@ -299,9 +323,7 @@ def render_managed_bookings():
     records = state.get("manage_records")
     if records is None:
         return
-    if not records:
-        st.info("Não encontramos agendamentos para esse telefone.")
-        return
+    st.button("Encerrar consulta", on_click=clear_managed_booking)
 
     now = datetime.now(ZoneInfo(TIMEZONE))
     for record in records:
@@ -328,11 +350,11 @@ def render_managed_bookings():
                 state.manage_action = (appointment_id, "cancel")
                 state.pop("manage_slots", None)
             if state.get("manage_action") == (appointment_id, "reschedule"):
-                render_reschedule(record, state.manage_phone, now.date())
+                render_reschedule(record, state.manage_credentials, now.date())
             elif state.get("manage_action") == (appointment_id, "cancel"):
                 st.warning("Confirme apenas se quiser liberar esse horário.")
                 if st.button("Confirmar cancelamento", key=f"confirm_cancel_{appointment_id}", type="primary"):
-                    update_managed_booking(record, state.manage_phone, "cancel")
+                    update_managed_booking(record, state.manage_credentials, "cancel")
             else:
                 continue
             if st.button("Voltar", key=f"manage_back_{appointment_id}"):
@@ -413,6 +435,7 @@ tab_book, tab_manage, tab_info, tab_chat = st.tabs(["Agendar", "Meus horários",
 with tab_book:
     render_booking(catalog)
 with tab_chat:
+    st.caption("Use Agendar para fazer uma reserva e Meus horários para consultar ou alterar. Digite seu código privado apenas em Meus horários.")
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])

@@ -8,6 +8,8 @@ Os parâmetros iniciais vieram de `ParametrosBarbearia.docx`. A Barbearia Imperi
 
 Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedência. O calendário informa o período aberto. Em instalações existentes com `.env` próprio, defina `MAX_BOOKING_DAYS=7` e reinicie a API e a interface para aplicar a nova janela.
 
+Em **Meus horários**, informe o telefone e o código privado do comprovante para consultar, remarcar ou cancelar uma reserva. Cada código dá acesso a uma única reserva. Use **Agendar** para criar reservas. O chat ajuda com informações e disponibilidade.
+
 ## Executar localmente
 
 Use Python 3.11 ou 3.12. A opção recomendada é `uv`, que usa o arquivo `uv.lock` para instalar as mesmas versões em Windows, macOS e Linux e pode baixar uma versão compatível do Python quando necessário:
@@ -39,6 +41,7 @@ Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A
 
 - O dono pode consultar e gerenciar a agenda de todos os profissionais. Cada barbeiro gerencia apenas sua própria agenda.
 - **Agenda** abre no dia atual e oferece atalhos para hoje e amanhã, além de filtros por data e situação. O dono também pode filtrar por profissional. Em **Balcão**, a equipe pode registrar reservas feitas presencialmente ou por telefone, de hoje até 30 dias à frente.
+- Entregue o código privado ao cliente ao confirmar uma reserva no balcão. Para reservas anteriores à mudança ou em caso de perda, abra a reserva na agenda e emita outro código após verificar a identidade do cliente. A emissão invalida o código anterior.
 - Em **Bloqueios**, a equipe pode reservar intervalos ou dias inteiros para folgas e férias. O sistema informa os códigos das reservas confirmadas que precisam ser resolvidas antes de bloquear o período.
 - **Serviços** e **Informações e escala** ficam disponíveis ao dono. As alterações de preço e duração valem para novas reservas. Mudanças de expediente ou escala que deixariam uma reserva futura sem atendimento são recusadas.
 

@@ -60,6 +60,10 @@ def initialize_database(path: str | Path | None = None) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_appointments_time ON appointments(starts_at, ends_at, barber_id, status);
+        CREATE TABLE IF NOT EXISTS appointment_access (
+            appointment_id INTEGER PRIMARY KEY REFERENCES appointments(id) ON DELETE CASCADE,
+            code_hash TEXT NOT NULL UNIQUE
+        );
         CREATE TABLE IF NOT EXISTS staff_accounts (
             username TEXT PRIMARY KEY,
             password_hash BLOB NOT NULL,

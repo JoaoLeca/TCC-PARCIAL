@@ -139,13 +139,13 @@ def test_booking_shows_receipt_and_persists_across_reruns(booking_app):
     ui.text_input(key="booking_phone").input("16999990000").run()
     button(ui, "Confirmar agendamento").click().run()
     assert not ui.exception
-    records = api.get("/appointments", params={"phone": "16999990000"}).json()
-    assert len(records) == 1
-    assert records[0]["starts_at"] == slot["starts_at"]
-    assert records[0]["barber_id"] == slot["barber_id"]
+    code = ui.session_state["booking_receipt"]["access_code"]
+    assert any(element.value == code for element in ui.code)
+    record = customer_booking(api, {"access_code": code})
+    assert record["starts_at"] == slot["starts_at"]
     ui.run()
     assert any(message.value == "Agendamento confirmado!" for message in ui.success)
-    assert any(f"#{records[0]['id']}" in message.value for message in ui.markdown)
+    assert any(f"#{record['id']}" in message.value for message in ui.markdown)
 
 
 def test_new_search_filters_invalidate_previous_slot(booking_app):
@@ -208,8 +208,15 @@ def create_manage_booking(api, phone="16999990000"):
     return result.json()
 
 
-def lookup_booking(ui, phone="16999990000"):
+def customer_booking(api, record):
+    result = api.post("/appointments/lookup", json={"phone": "16999990000", "access_code": record["access_code"]})
+    assert result.status_code == 200
+    return result.json()
+
+
+def lookup_booking(ui, record, phone="16999990000"):
     ui.text_input(key="lookup_phone").input(phone)
+    ui.text_input(key="lookup_code").input(record["access_code"])
     button(ui, "Consultar").click().run()
     assert not ui.exception
 
@@ -217,24 +224,24 @@ def lookup_booking(ui, phone="16999990000"):
 def test_booking_can_be_cancelled_after_lookup_and_explicit_confirmation(booking_app):
     ui, api = booking_app
     record = create_manage_booking(api)
-    lookup_booking(ui)
+    lookup_booking(ui, record)
     ui.run()
     button(ui, "Cancelar reserva").click().run()
-    assert api.get("/appointments", params={"phone": "16999990000"}).json()[0]["status"] == "confirmed"
+    assert customer_booking(api, record)["status"] == "confirmed"
     button(ui, "Confirmar cancelamento").click().run()
     assert not ui.exception
     assert any(element.value == "Reserva cancelada." for element in ui.success)
     assert any("Cancelado" in element.value for element in ui.markdown)
-    result = api.get("/appointments", params={"phone": "16999990000"}).json()[0]
+    result = customer_booking(api, record)
     assert (result["id"], result["status"]) == (record["id"], "cancelled")
 
 
 def test_manage_refreshes_a_booking_cancelled_elsewhere(booking_app):
     ui, api = booking_app
     record = create_manage_booking(api)
-    lookup_booking(ui)
+    lookup_booking(ui, record)
     button(ui, "Cancelar reserva").click().run()
-    result = api.post(f"/appointments/{record['id']}/cancel", json={"phone": "16999990000", "confirmed": True})
+    result = api.post(f"/appointments/{record['id']}/cancel", json={"phone": "16999990000", "access_code": record["access_code"], "confirmed": True})
     assert result.status_code == 200
 
     button(ui, "Confirmar cancelamento").click().run()
@@ -246,16 +253,16 @@ def test_manage_refreshes_a_booking_cancelled_elsewhere(booking_app):
 def test_reschedule_finds_formatted_phone_and_updates_reservation(booking_app):
     ui, api = booking_app
     record = create_manage_booking(api, "(16) 99999-0000")
-    lookup_booking(ui)
+    lookup_booking(ui, record)
     button(ui, "Remarcar").click().run()
     button(ui, "Buscar novos horários").click().run()
     selector = next(widget for widget in ui.selectbox if widget.label == "Novo horário")
     assert selector.options[0] == "08h30"
     selector.select_index(0).run()
     selected = next(widget for widget in ui.selectbox if widget.label == "Novo horário").value
-    assert api.get("/appointments", params={"phone": "16999990000"}).json()[0]["starts_at"] == record["starts_at"]
+    assert customer_booking(api, record)["starts_at"] == record["starts_at"]
     button(ui, "Confirmar remarcação").click().run()
     assert not ui.exception
     assert any(element.value == "Reserva remarcada." for element in ui.success)
-    result = api.get("/appointments", params={"phone": "16999990000"}).json()[0]
+    result = customer_booking(api, record)
     assert (result["id"], result["starts_at"]) == (record["id"], selected["starts_at"])

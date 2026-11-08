@@ -1,5 +1,7 @@
 from datetime import date, datetime, time, timedelta
+from hashlib import sha256
 from pathlib import Path
+from secrets import token_urlsafe
 from barber_bot.config import MIN_BOOKING_DAYS, MAX_BOOKING_DAYS, SHOP_OPEN_DAYS, TIMEZONE
 from barber_bot.db import connect, phone_key
 from zoneinfo import ZoneInfo
@@ -9,6 +11,53 @@ TZ = ZoneInfo(TIMEZONE)
 
 class BookingError(ValueError):
     pass
+
+
+class BookingAccessError(BookingError):
+    pass
+
+
+def _access_digest(code):
+    return sha256(code.strip().encode("utf-8")).hexdigest()
+
+
+def _issue_access_code(conn, appointment_id):
+    code = "BI-" + token_urlsafe(18)
+    conn.execute("""
+        INSERT INTO appointment_access(appointment_id, code_hash) VALUES (?, ?)
+        ON CONFLICT(appointment_id) DO UPDATE SET code_hash=excluded.code_hash
+    """, (appointment_id, _access_digest(code)))
+    return code
+
+
+def _require_access(conn, phone, code, appointment_id=None):
+    row = conn.execute("""
+        SELECT a.id FROM appointments a JOIN appointment_access c ON c.appointment_id=a.id
+        WHERE c.code_hash=? AND phone_key(a.customer_phone)=? AND (? IS NULL OR a.id=?)
+    """, (_access_digest(code), phone_key(phone), appointment_id, appointment_id)).fetchone()
+    if row is None:
+        raise BookingAccessError("Telefone ou código privado inválido. Confira os dados ou fale com a equipe.")
+    return row["id"]
+
+
+def get_customer_appointment(phone, code):
+    with connect() as conn:
+        appointment_id = _require_access(conn, phone, code)
+        return dict(conn.execute("""
+            SELECT a.id, a.status, a.starts_at, a.ends_at, b.name AS barber, s.name AS service,
+                   COALESCE(a.price_at_booking,s.price) AS price
+            FROM appointments a JOIN barbers b ON b.id=a.barber_id
+            JOIN services s ON s.id=a.service_id WHERE a.id=?
+        """, (appointment_id,)).fetchone())
+
+
+def replace_access_code(appointment_id, barber_id):
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM appointments WHERE id=? AND (? IS NULL OR barber_id=?)",
+                            (appointment_id, barber_id, barber_id)).fetchone():
+            return None
+        return _issue_access_code(conn, appointment_id)
 
 
 def _minutes(value: time) -> int:
@@ -137,8 +186,9 @@ def create_appointment(customer_name: str, customer_phone: str, service_id: int,
             raise BookingError("Esse horário acabou de ser ocupado. Consulte a disponibilidade novamente.")
         _check_blocks(conn, barber_id, start, end)
         cursor = conn.execute("INSERT INTO appointments(customer_name,customer_phone,barber_id,service_id,starts_at,ends_at,price_at_booking) VALUES (?,?,?,?,?,?,?)", (name, phone, barber_id, service_id, start.isoformat(), end.isoformat(), service["price"]))
+        access_code = _issue_access_code(conn, cursor.lastrowid)
         row = conn.execute("SELECT a.*, b.name AS barber, s.name AS service, a.price_at_booking AS price FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id WHERE a.id=?", (cursor.lastrowid,)).fetchone()
-        return dict(row)
+        return {**dict(row), "access_code": access_code}
 
 
 def find_appointments(customer_phone: str, path: str | Path | None = None) -> list[dict]:
@@ -147,11 +197,13 @@ def find_appointments(customer_phone: str, path: str | Path | None = None) -> li
     return [dict(r) for r in rows]
 
 
-def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool = False, path: str | Path | None = None, *, min_notice_hours: int = 3) -> dict:
+def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool = False, path: str | Path | None = None, *, min_notice_hours: int = 3, access_code: str | None = None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita antes de cancelar o agendamento.")
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if access_code is not None:
+            _require_access(conn, customer_phone, access_code, appointment_id)
         row = conn.execute("SELECT * FROM appointments WHERE id=? AND phone_key(customer_phone)=? AND status='confirmed'", (appointment_id, phone_key(customer_phone))).fetchone()
         if not row:
             raise BookingError("Agendamento ativo não encontrado para esse telefone.")
@@ -178,8 +230,10 @@ def _reschedulable_booking(conn, appointment_id, customer_phone, min_notice_hour
     return booking
 
 
-def reschedule_options(appointment_id: int, customer_phone: str, appointment_date: date, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True) -> list[dict]:
+def reschedule_options(appointment_id: int, customer_phone: str, appointment_date: date, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True, access_code: str | None = None) -> list[dict]:
     with connect(path) as conn:
+        if access_code is not None:
+            _require_access(conn, customer_phone, access_code, appointment_id)
         booking = _reschedulable_booking(conn, appointment_id, customer_phone, min_notice_hours)
     slots = availability(booking["service_id"], appointment_date, booking["barber_id"], path,
                          exclude_appointment_id=appointment_id, days_range=days_range,
@@ -192,12 +246,14 @@ def _booking_duration(booking) -> int:
     return (_parse_start(booking["ends_at"]) - _parse_start(booking["starts_at"])) // timedelta(minutes=1)
 
 
-def reschedule_appointment(appointment_id: int, customer_phone: str, new_starts_at: str, confirmed: bool, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True) -> dict:
+def reschedule_appointment(appointment_id: int, customer_phone: str, new_starts_at: str, confirmed: bool, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True, access_code: str | None = None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita da pessoa antes de remarcar.")
     start = _parse_start(new_starts_at)
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if access_code is not None:
+            _require_access(conn, customer_phone, access_code, appointment_id)
         old = _reschedulable_booking(conn, appointment_id, customer_phone, min_notice_hours)
         barber = conn.execute("SELECT * FROM barbers WHERE id=?", (old["barber_id"],)).fetchone()
         end = _validate_window(conn, start, _booking_duration(old), days_range)

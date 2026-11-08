@@ -51,6 +51,7 @@ def test_staff_agenda_is_protected(tmp_path, monkeypatch):
             ("POST", "/blocks"), ("DELETE", "/blocks/1"),
             ("POST", "/appointments/1/cancel"), ("GET", "/appointments/1/reschedule-options"),
             ("POST", "/appointments/1/reschedule"), ("POST", "/services"),
+            ("POST", "/appointments/1/access-code"),
             ("PATCH", "/services/1"), ("PUT", "/shop"), ("PUT", "/barbers/1/working-days"),
         ):
             assert api.request(method, f"/staff{endpoint}").status_code == 401
@@ -80,6 +81,15 @@ def test_barber_can_only_see_and_change_own_reservations(staff_app):
     url = f"/staff/appointments/{other['id']}/cancel"
     assert api.post(url, json={"confirmed": True}, headers=barber).status_code == 404
     assert api.get(f"/staff/appointments/{other['id']}/reschedule-options", params=params, headers=barber).status_code == 404
+    assert api.post(f"/staff/appointments/{other['id']}/access-code", json={"confirmed": True}, headers=barber).status_code == 404
+    code_url = f"/staff/appointments/{own['id']}/access-code"
+    assert api.post(code_url, json={"confirmed": False}, headers=barber).status_code == 409
+    replacement = api.post(code_url, json={"confirmed": True}, headers=barber)
+    assert replacement.status_code == 200
+    credentials = {"phone": own["customer_phone"], "access_code": own["access_code"]}
+    assert api.post("/appointments/lookup", json=credentials).status_code == 404
+    credentials["access_code"] = replacement.json()["access_code"]
+    assert api.post("/appointments/lookup", json=credentials).json()["id"] == own["id"]
     url = f"/staff/appointments/{own['id']}/cancel"
     assert api.post(url, json={"confirmed": False}, headers=barber).status_code == 409
     assert api.post(url, json={"confirmed": True}, headers=barber).status_code == 200

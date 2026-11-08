@@ -86,6 +86,16 @@ def change_reservation(record, now):
     st.write(f"{record['service']} com {record['barber']} · {STATUS[record['status']]}")
     original = appointment_time(record["starts_at"])
     st.write(f"{original:%d/%m/%Y às %Hh%M} · {format_price(record['price'])}")
+    with st.expander("Emitir código privado para o cliente"):
+        st.caption("Use após confirmar a identidade do cliente. A emissão invalida o código anterior.")
+        if st.button("Identidade confirmada · Emitir código", key=f"staff_code_{appointment_id}"):
+            try:
+                result = call_api("POST", f"staff/appointments/{appointment_id}/access-code", data={"confirmed": True})
+            except StaffRequestError as exc:
+                st.error(str(exc))
+            else:
+                st.code(result["access_code"], language=None)
+                st.caption("Entregue o código somente ao cliente identificado.")
     if record["status"] != "confirmed" or original <= now:
         return
 
@@ -244,8 +254,9 @@ def counter_booking(member):
                 "expected_price": service["price"], "expected_duration": service["duration_minutes"],
             })
             state.pop("staff_counter_slots", None)
-            state.staff_success = f"Reserva #{result['id']} confirmada."
-            st.rerun()
+            st.success(f"Reserva #{result['id']} confirmada.")
+            st.caption("Entregue este código privado ao cliente para acessar Meus horários.")
+            st.code(result["access_code"], language=None)
     except StaffRequestError as exc:
         st.error(str(exc))
 
