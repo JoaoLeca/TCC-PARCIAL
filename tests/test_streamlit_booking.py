@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 from barber_bot import db
 from barber_bot.api import app
+from barber_bot.config import MAX_BOOKING_DAYS, MIN_BOOKING_DAYS
 from barber_bot.schedule import TZ
 
 
@@ -42,8 +43,30 @@ def has_contact_fields(ui):
     return any(widget.label == "Seu nome" for widget in ui.text_input)
 
 
+def next_open_days():
+    today = datetime.now(TZ).date()
+    days = [today + timedelta(days=offset) for offset in (1, 2, 3)]
+    return [day for day in days if day.weekday() != 6]
+
+
+def test_booking_dates_follow_the_selected_barber_availability(booking_app):
+    ui, _ = booking_app
+    first_day, next_day, *_ = next_open_days()
+    with db.connect() as conn:
+        conn.execute("UPDATE barbers SET working_days = ? WHERE id = 1", (str(next_day.weekday()),))
+
+    ui.selectbox(key="booking_barber").select(1).run()
+
+    assert not ui.exception
+    assert ui.session_state["booking_date"] == next_day
+    assert not ui.button(key=f"booking_day_{next_day.isoformat()}").disabled
+    if first_day.month == next_day.month:
+        assert ui.button(key=f"booking_day_{first_day.isoformat()}").disabled
+    assert any("Sem vaga ou fora do período" in item.value for item in ui.caption)
+    assert ui.selectbox(key="booking_slot").options
+
+
 def choose_slot(ui):
-    button(ui, "Ver horários").click().run()
     slot = ui.selectbox(key="booking_slot")
     slot.select_index(1).run()
     assert not ui.exception
@@ -53,8 +76,6 @@ def choose_slot(ui):
 def test_agenda_opens_first_and_only_asks_for_contact_after_slot_selection(booking_app):
     ui, _ = booking_app
     assert ui.tabs[0].label == "Agendar"
-    assert not has_contact_fields(ui)
-    button(ui, "Ver horários").click().run()
     assert not has_contact_fields(ui)
     ui.selectbox(key="booking_slot").select_index(1).run()
     assert has_contact_fields(ui)
@@ -87,10 +108,16 @@ def test_first_screen_starts_rendering_after_catalog_is_ready(monkeypatch):
         events.append(endpoint)
         response = requests.Response()
         response.status_code = 200
-        response._content = {
-            "/services": b'[{"id": 1, "name": "Corte", "price": 50, "duration_minutes": 40}]',
-            "/barbers": b'[{"id": 1, "name": "Rafael", "working_days": [1, 2, 3, 4, 5, 6]}]',
-        }[endpoint]
+        if endpoint == "/availability":
+            response._content = b"[]"
+            return response
+        assert endpoint == "/catalog"
+        response._content = b'''{
+            "services": [{"id": 1, "name": "Corte", "price": 50, "duration_minutes": 40}],
+            "barbers": [{"id": 1, "name": "Rafael", "working_days": [1, 2, 3, 4, 5, 6]}],
+            "shop": {"name": "Barbearia Imperial", "address": "Rua Teste", "phone": "16999990000",
+                     "payment_methods": "Pix", "open_1": "08:00", "close_1": "12:00", "open_2": null}
+        }'''
         return response
 
     monkeypatch.setenv("API_BASE_URL", "http://first-screen.test")
@@ -98,11 +125,11 @@ def test_first_screen_starts_rendering_after_catalog_is_ready(monkeypatch):
     monkeypatch.setattr(requests.Session, "request", request)
     ui = AppTest.from_file(str(APP_SCRIPT)).run()
     assert not ui.exception
-    assert events == ["/services", "/barbers", "title"]
+    first_render = ["/catalog", "title"] + ["/availability"] * (MAX_BOOKING_DAYS - MIN_BOOKING_DAYS + 1)
+    assert events == first_render
     assert ui.selectbox(key="booking_service").value["name"] == "Corte"
-    assert not button(ui, "Ver horários").disabled
     ui.run()
-    assert events == ["/services", "/barbers", "title", "title"]
+    assert events == [*first_render, "title"]
 
 
 def test_booking_shows_receipt_and_persists_across_reruns(booking_app):
@@ -123,20 +150,24 @@ def test_booking_shows_receipt_and_persists_across_reruns(booking_app):
 
 def test_new_search_filters_invalidate_previous_slot(booking_app):
     ui, _ = booking_app
-    choose_slot(ui)
-    ui.date_input(key="booking_date").set_value(datetime.now(TZ).date() + timedelta(days=2)).run()
-    assert all(widget.key != "booking_slot" for widget in ui.selectbox)
+    slot = choose_slot(ui)
+    selected_day = datetime.fromisoformat(slot["starts_at"]).date()
+    next_day = next_open_days()[1]
+    if next_day.month != selected_day.month:
+        ui.button(key="booking_next_month").click().run()
+    ui.button(key=f"booking_day_{next_day.isoformat()}").click().run()
+    assert ui.session_state["booking_date"] == next_day
+    assert ui.selectbox(key="booking_slot").value is None
     assert all(widget.label != "Confirmar agendamento" for widget in ui.button)
 
 
 def test_empty_search_removes_previous_slot_even_with_same_filters(booking_app):
     ui, _ = booking_app
-    slot = choose_slot(ui)
-    other_weekday = (datetime.fromisoformat(slot["starts_at"]).weekday() + 1) % 7
+    choose_slot(ui)
     with db.connect() as conn:
-        conn.execute("UPDATE barbers SET working_days = ?", (str(other_weekday),))
+        conn.execute("UPDATE barbers SET working_days = '6'")
 
-    button(ui, "Ver horários").click().run()
+    button(ui, "Atualizar disponibilidade").click().run()
     assert any("Não há horários" in message.value for message in ui.info)
     assert all(widget.key != "booking_slot" for widget in ui.selectbox)
     assert all(widget.label != "Confirmar agendamento" for widget in ui.button)
@@ -165,7 +196,7 @@ def test_conflict_refreshes_slots_and_preserves_contact(booking_app):
 
 
 def create_manage_booking(api, phone="16999990000"):
-    day = datetime.now(TZ).date() + timedelta(days=1)
+    day = next_open_days()[0]
     slots = api.get("/availability", params={"service_id": 1, "appointment_date": day.isoformat()}).json()
     slot = slots[0]
     result = api.post("/appointments", json={

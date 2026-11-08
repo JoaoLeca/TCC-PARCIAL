@@ -20,3 +20,4 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MIN_BOOKING_DAYS = int(os.getenv("MIN_BOOKING_DAYS", "1"))
 MAX_BOOKING_DAYS = int(os.getenv("MAX_BOOKING_DAYS", "7"))
 TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
+SHOP_OPEN_DAYS = (0, 1, 2, 3, 4, 5)  # Segunda a sábado, conforme date.weekday().

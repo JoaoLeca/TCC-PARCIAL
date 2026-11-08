@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pytest
-from barber_bot.db import initialize_database
+from barber_bot.db import connect, initialize_database
 from barber_bot.schedule import BookingError, create_appointment, availability, cancel_appointment, find_appointments, reschedule_appointment
 from barber_bot.schedule import list_barbers
 
@@ -77,9 +77,22 @@ def test_cancel_confirmed_booking(db):
 
 
 def test_barber_weekday_schedule_is_enforced(db):
-    alecio = next(barber for barber in list_barbers(db) if barber["name"] == "Alecio")
-    assert 5 not in alecio["working_days"]
-    assert 6 not in alecio["working_days"]
+    assert {barber["name"]: barber["working_days"] for barber in list_barbers(db)} == {
+        "Rafael": [1, 2, 3, 4, 5],
+        "Diego": [0, 1, 3, 4, 5],
+        "Alecio": [0, 1, 2, 3, 4],
+    }
+
+
+def test_sunday_is_closed_even_if_a_legacy_barber_schedule_includes_it(db):
+    with connect(db) as conn:
+        conn.execute("UPDATE barbers SET working_days='6' WHERE id=1")
+    today = datetime.now(TZ).date()
+    days_until_sunday = (6 - today.weekday()) % 7 or 7
+    start = valid_start(day_offset=days_until_sunday)
+    assert availability(1, datetime.fromisoformat(start).date(), path=db, days_range=False) == []
+    with pytest.raises(BookingError, match="fechada aos domingos"):
+        create_appointment("Ana", "16999990000", 1, 1, start, True, db, days_range=False)
 
 
 def test_reschedule_keeps_old_booking_when_new_time_is_occupied(db):

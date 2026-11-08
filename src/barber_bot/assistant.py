@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from barber_bot.config import OPENAI_API_KEY, OPENAI_MODEL, TIMEZONE
 from barber_bot.db import initialize_database
 from barber_bot.knowledge import search_knowledge
+from barber_bot.operations import shop_profile
 from barber_bot.schedule import availability, list_services, list_barbers, find_appointments, create_appointment, cancel_appointment, reschedule_appointment
 from datetime import date
 from barber_bot.intent import classify_intent
@@ -25,6 +26,11 @@ def build_agent():
     def consultar_barbeiros() -> list[dict]:
         """Lista barbeiros e dias de atendimento; segunda=0 e domingo=6."""
         return list_barbers()
+
+    @tool
+    def consultar_barbearia() -> dict:
+        """Consulta o nome, endereço, telefone, pagamentos e expediente atuais da barbearia."""
+        return shop_profile()
 
     @tool
     def buscar_disponibilidade(servico_id: int, data: str, barbeiro_id: int | None = None) -> list[dict]:
@@ -50,9 +56,10 @@ def build_agent():
         return f"Solicitação #{cur.lastrowid} registrada. A equipe entrará em contato durante o expediente."
 
     @tool
-    def gravar_agendamento(nome: str, telefone: str, servico_id: int, barbeiro_id: int, inicio_iso: str, confirmado_pelo_cliente: bool) -> dict:
-        """Grava um agendamento somente após o cliente confirmar nome, serviço, barbeiro, data e horário."""
-        return create_appointment(nome, telefone, servico_id, barbeiro_id, inicio_iso, confirmado_pelo_cliente)
+    def gravar_agendamento(nome: str, telefone: str, servico_id: int, barbeiro_id: int, inicio_iso: str, preco_confirmado: float, duracao_confirmada: int, confirmado_pelo_cliente: bool) -> dict:
+        """Grava após confirmar nome, serviço, barbeiro, data, horário, preço em reais e duração em minutos."""
+        return create_appointment(nome, telefone, servico_id, barbeiro_id, inicio_iso, confirmado_pelo_cliente,
+                                  expected_price=preco_confirmado, expected_duration=duracao_confirmada)
 
     @tool
     def cancelar_agendamento(agendamento_id: int, telefone: str, confirmado_pelo_cliente: bool) -> dict:
@@ -64,8 +71,8 @@ def build_agent():
         """Remarca agendamento após confirmar os dados e o novo horário com o cliente."""
         return reschedule_appointment(agendamento_id, telefone, novo_inicio_iso, confirmado_pelo_cliente)
 
-    system_prompt = f"""Você é o assistente virtual da Barbearia Imperial, em Ribeirão Preto-SP. A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Responda em português brasileiro, com clareza e cordialidade. Use ferramentas para preços, agenda e políticas. Nunca invente disponibilidade ou regras. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se nenhum trecho relevante aparecer, diga que não encontrou a informação e encaminhe à equipe. Antes de gravar ou remarcar, apresente nome, serviço, barbeiro, data e hora e aguarde confirmação explícita. Só então use a ferramenta com confirmado_pelo_cliente=true. Para cancelar, confirme o agendamento e telefone. Se não souber, houver reclamação, erro ou pedido fora do escopo, encaminhe para humano. Não solicite dados além do necessário. Horário: todos os dias 08:00–12:00 e 13:30–20:00; barbeiros têm escalas individuais."""
-    return create_agent(ChatOpenAI(model=OPENAI_MODEL, temperature=0, api_key=OPENAI_API_KEY), tools=[consultar_servicos, consultar_barbeiros, buscar_disponibilidade, consultar_agendamentos, consultar_politicas, gravar_agendamento, cancelar_agendamento, remarcar_agendamento, solicitar_atendimento_humano], system_prompt=system_prompt)
+    system_prompt = f"""Você é o assistente virtual da barbearia. Use consultar_barbearia para obter o nome atual da barbearia. A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Responda em português brasileiro, com clareza e cordialidade. Use ferramentas para preços, agenda e políticas. Nunca invente disponibilidade ou regras. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se nenhum trecho relevante aparecer, diga que não encontrou a informação e encaminhe à equipe. Antes de gravar ou remarcar, apresente nome, serviço, barbeiro, data e hora. Ao gravar, inclua o preço e a duração retornados pelo catálogo. Aguarde confirmação explícita. Se o catálogo mudar, apresente os novos valores e peça nova confirmação. Só então use a ferramenta com confirmado_pelo_cliente=true. Para cancelar, confirme o agendamento e telefone. Se não souber, houver reclamação, erro ou pedido fora do escopo, encaminhe para humano. Não solicite dados além do necessário. Para endereço, contato, pagamento e expediente, use consultar_barbearia. Para dias de atendimento individuais, use consultar_barbeiros. Essas ferramentas têm os dados operacionais atuais."""
+    return create_agent(ChatOpenAI(model=OPENAI_MODEL, temperature=0, api_key=OPENAI_API_KEY), tools=[consultar_servicos, consultar_barbeiros, consultar_barbearia, buscar_disponibilidade, consultar_agendamentos, consultar_politicas, gravar_agendamento, cancelar_agendamento, remarcar_agendamento, solicitar_atendimento_humano], system_prompt=system_prompt)
 
 
 def run_agent(messages: list[dict]) -> dict:

@@ -4,7 +4,7 @@ Protótipo acadêmico de atendimento com agenda, API, interface web e busca RAG 
 
 ## Dados usados
 
-Os parâmetros vieram de `ParametrosBarbearia.docx`: Barbearia Imperial, Ribeirão Preto-SP; Rafael (terça a domingo), Diego (terça a sábado), Alecio (segunda a sexta); quatro serviços e dois pacotes. A base de conhecimento tem 15 documentos curtos. O telefone e endereço foram fornecidos como dados de demonstração.
+Os parâmetros iniciais vieram de `ParametrosBarbearia.docx`. A Barbearia Imperial funciona de segunda a sábado, das 08:00 às 12:00 e das 13:30 às 20:00. Na escala padrão, Rafael folga na segunda, Diego na quarta e Alecio no sábado. A base de conhecimento tem 15 documentos curtos. O telefone e endereço foram fornecidos como dados de demonstração.
 
 Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedência. O calendário informa o período aberto. Em instalações existentes com `.env` próprio, defina `MAX_BOOKING_DAYS=7` e reinicie a API e a interface para aplicar a nova janela.
 
@@ -32,6 +32,30 @@ uv run streamlit run src/streamlit_app.py
 ```
 
 Abra o endereço local exibido pelo Streamlit. A API fica em `http://127.0.0.1:8000/docs`.
+
+## Agenda da equipe
+
+Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A página pública de reservas não exibe o atalho. O endereço da equipe mostra apenas a tela de login até validar uma conta cadastrada. A API confere a sessão e as permissões a cada operação interna.
+
+- O dono pode consultar e gerenciar a agenda de todos os profissionais. Cada barbeiro gerencia apenas sua própria agenda.
+- **Agenda** abre no dia atual e oferece atalhos para hoje e amanhã, além de filtros por data e situação. O dono também pode filtrar por profissional. Em **Balcão**, a equipe pode registrar reservas feitas presencialmente ou por telefone, de hoje até 30 dias à frente.
+- Em **Bloqueios**, a equipe pode reservar intervalos ou dias inteiros para folgas e férias. O sistema informa os códigos das reservas confirmadas que precisam ser resolvidas antes de bloquear o período.
+- **Serviços** e **Informações e escala** ficam disponíveis ao dono. As alterações de preço e duração valem para novas reservas. Mudanças de expediente ou escala que deixariam uma reserva futura sem atendimento são recusadas.
+
+Crie os acessos no mesmo ambiente e diretório usados pela API. O comando pede a senha de forma interativa.
+
+```bash
+uv run python -m barber_bot.staff dono
+uv run python -m barber_bot.staff rafael --barber Rafael
+uv run python -m barber_bot.staff diego --barber Diego
+uv run python -m barber_bot.staff alecio --barber Alecio
+```
+
+Use `--replace` para redefinir a senha de um usuário e encerrar as sessões anteriores.
+
+Em um banco já existente, as escalas de trabalho gravadas são preservadas. Para adotar a nova escala padrão, entre como dono e abra **Informações e escala**. Defina a folga de Rafael na segunda, Diego na quarta e Alecio no sábado. A agenda bloqueia domingos, e o painel avisa se houver reservas futuras que impeçam a alteração de escala.
+
+O acesso por função e a separação entre a agenda individual e a da equipe seguem o modelo documentado pelo [Square Appointments](https://squareup.com/help/us/en/article/5350-create-staff-member-profiles-for-square-appointments) e pelo [Fresha](https://www.fresha.com/help-center/knowledge-base/team/100687-create-permission-roles). A validação no servidor segue a [orientação de autorização da OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html).
 
 ## Criar índice da base de conhecimento
 

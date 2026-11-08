@@ -1,3 +1,3 @@
 # Barbeiros e dias de atendimento
 
-Rafael atende de terça-feira a domingo. Diego atende de terça-feira a sábado. Alecio atende de segunda-feira a sexta-feira. A disponibilidade de cada barbeiro depende do dia e da duração do serviço.
+Rafael, Diego e Alecio têm folga aos domingos e em mais um dia da semana. Consulte a escala atual da equipe para saber o dia de folga de cada profissional. A disponibilidade depende da escala, das reservas e da duração do serviço.

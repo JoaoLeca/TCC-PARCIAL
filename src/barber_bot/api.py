@@ -7,6 +7,8 @@ from barber_bot.db import initialize_database, connect
 from barber_bot.schedule import BookingError, availability, list_services, list_barbers, create_appointment, find_appointments, cancel_appointment, reschedule_appointment, reschedule_options
 from barber_bot.assistant import run_agent
 from barber_bot.config import OPENAI_API_KEY
+from barber_bot.operations import shop_profile
+from barber_bot.staff_api import router as staff_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,6 +17,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Barbearia Imperial API", version="0.1.0", lifespan=lifespan)
+app.include_router(staff_router)
 
 
 class BookingIn(BaseModel):
@@ -24,6 +27,8 @@ class BookingIn(BaseModel):
     barber_id: int
     starts_at: str
     confirmed: bool = False
+    expected_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    expected_duration: int | None = Field(default=None, gt=0)
 
 
 class ChatIn(BaseModel):
@@ -46,6 +51,16 @@ def barbers():
     return list_barbers()
 
 
+@app.get("/shop")
+def shop():
+    return shop_profile()
+
+
+@app.get("/catalog")
+def public_catalog():
+    return {"services": list_services(), "barbers": list_barbers(), "shop": shop_profile()}
+
+
 @app.get("/availability")
 def get_availability(service_id: int, appointment_date: date, barber_id: int | None = None):
     try:
@@ -57,7 +72,9 @@ def get_availability(service_id: int, appointment_date: date, barber_id: int | N
 @app.post("/appointments")
 def book(payload: BookingIn):
     try:
-        return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id, payload.starts_at, payload.confirmed)
+        return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
+                                  payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
+                                  expected_duration=payload.expected_duration)
     except BookingError as exc:
         raise HTTPException(409, str(exc))
 
