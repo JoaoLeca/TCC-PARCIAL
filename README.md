@@ -4,7 +4,9 @@ Protótipo acadêmico de atendimento com agenda, API, interface web e busca RAG 
 
 ## Dados usados
 
-Os parâmetros vieram de `ParametrosBarbearia.docx`: Barbearia Imperial, Ribeirão Preto-SP; Rafael (terça a domingo), Diego (terça a sábado), Alecio (segunda a sexta); quatro serviços e dois pacotes. A antecedência de agendamento foi definida como mínimo de 1 dia e máximo de 3 dias. A base de conhecimento tem 15 documentos curtos. O telefone e endereço foram fornecidos como dados de demonstração.
+Os parâmetros vieram de `ParametrosBarbearia.docx`: Barbearia Imperial, Ribeirão Preto-SP; Rafael (terça a domingo), Diego (terça a sábado), Alecio (segunda a sexta); quatro serviços e dois pacotes. A base de conhecimento tem 15 documentos curtos. O telefone e endereço foram fornecidos como dados de demonstração.
+
+Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedência. O calendário informa o período aberto. Em instalações existentes com `.env` próprio, defina `MAX_BOOKING_DAYS=7` e reinicie a API e a interface para aplicar a nova janela.
 
 ## Executar localmente
 

@@ -18,5 +18,5 @@ CHROMA_DIR = ROOT / "data" / "chroma"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MIN_BOOKING_DAYS = int(os.getenv("MIN_BOOKING_DAYS", "1"))
-MAX_BOOKING_DAYS = int(os.getenv("MAX_BOOKING_DAYS", "3"))
+MAX_BOOKING_DAYS = int(os.getenv("MAX_BOOKING_DAYS", "7"))
 TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")

@@ -71,9 +71,14 @@ def render_booking(catalog):
     )
     today = datetime.now(ZoneInfo(TIMEZONE)).date()
     first_day = today + timedelta(days=MIN_BOOKING_DAYS)
+    last_day = today + timedelta(days=MAX_BOOKING_DAYS)
+    st.caption(
+        f"Reservas online com {MIN_BOOKING_DAYS} a {MAX_BOOKING_DAYS} dias de antecedência. "
+        f"Período aberto: {first_day:%d/%m} a {last_day:%d/%m}."
+    )
     chosen_date = st.date_input(
         "Data", value=first_day, min_value=first_day,
-        max_value=today + timedelta(days=MAX_BOOKING_DAYS), format="DD/MM/YYYY", key="booking_date",
+        max_value=last_day, format="DD/MM/YYYY", key="booking_date",
     )
     filters = (service["id"], barber_id, chosen_date)
     if filters != state.get("booking_filters"):

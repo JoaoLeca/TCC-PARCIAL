@@ -1,3 +1,3 @@
 # Antecedência para agendar
 
-Agendamentos podem ser feitos com no mínimo 1 dia e no máximo 3 dias de antecedência.
+A janela padrão de reservas online vai de 1 a 7 dias de antecedência. Os horários disponíveis dependem da escala e das vagas do serviço e do barbeiro escolhidos.
