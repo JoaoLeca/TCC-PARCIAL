@@ -42,7 +42,7 @@ Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A
 - Em **Bloqueios**, a equipe pode reservar intervalos ou dias inteiros para folgas e férias. O sistema informa os códigos das reservas confirmadas que precisam ser resolvidas antes de bloquear o período.
 - **Serviços** e **Informações e escala** ficam disponíveis ao dono. As alterações de preço e duração valem para novas reservas. Mudanças de expediente ou escala que deixariam uma reserva futura sem atendimento são recusadas.
 
-Crie os acessos no mesmo ambiente e diretório usados pela API. O comando pede a senha de forma interativa.
+Em uma instalação nova, crie as contas da equipe antes de tentar entrar. Execute os comandos no mesmo diretório e com o mesmo `DATABASE_PATH` usado pela API. O comando pede a senha de forma interativa e aceita de 12 a 128 caracteres.
 
 ```bash
 uv run python -m barber_bot.staff dono
@@ -51,7 +51,13 @@ uv run python -m barber_bot.staff diego --barber Diego
 uv run python -m barber_bot.staff alecio --barber Alecio
 ```
 
-Use `--replace` para redefinir a senha de um usuário e encerrar as sessões anteriores.
+Se alguém perder a senha, repita o comando da conta com `--replace`. Preserve `--barber` para manter a conta vinculada ao barbeiro. A redefinição encerra as sessões anteriores dessa conta e exige um novo login.
+
+```bash
+uv run python -m barber_bot.staff rafael --barber Rafael --replace
+```
+
+O banco SQLite e o arquivo privado de acessos ficam na instalação local. Após criar ou redefinir uma conta, valide o acesso em `/equipe`.
 
 Em um banco já existente, as escalas de trabalho gravadas são preservadas. Para adotar a nova escala padrão, entre como dono e abra **Informações e escala**. Defina a folga de Rafael na segunda, Diego na quarta e Alecio no sábado. A agenda bloqueia domingos, e o painel avisa se houver reservas futuras que impeçam a alteração de escala.
 
