@@ -35,6 +35,12 @@ uv run streamlit run src/streamlit_app.py
 
 Abra o endereço local exibido pelo Streamlit. A API fica em `http://127.0.0.1:8000/docs`.
 
+### Servidor temporário no Windows para demonstração
+
+O Windows deste computador já tem o cliente SSH. Dê duplo clique em `IniciarDemoWindows.bat` para abrir a API, a interface, o bot Telegram e um túnel Pinggy em janelas separadas. O túnel encaminha a porta 8501 em `127.0.0.1` e mostra uma URL HTTPS pública na janela **Link publico Pinggy**. Se quiser abrir apenas o túnel após iniciar os serviços, use `AbrirLinkPublico.bat`. A confirmação da chave SSH é salva em `ssh_known_hosts` na pasta do projeto; se o SSH pedir uma senha, pressione Enter.
+
+Não precisa instalar outro programa, criar uma conta, ter domínio ou alterar o roteador. A URL é temporária e muda quando o túnel reinicia; qualquer pessoa que receba o link poderá abrir o site. Para acessar a área da equipe, acrescente `/equipe` ao endereço público e entre com uma conta cadastrada. Mantenha as janelas abertas e impeça o computador de suspender durante a demonstração. Feche as janelas ao terminar.
+
 ## Agenda da equipe
 
 Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A página pública de reservas não exibe o atalho. O endereço da equipe mostra apenas a tela de login até validar uma conta cadastrada. A API confere a sessão e as permissões a cada operação interna.

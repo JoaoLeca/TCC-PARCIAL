@@ -16,3 +16,4 @@ __pycache__/
 *.db-*
 data/chroma/
 .streamlit/secrets.toml
+ssh_known_hosts
