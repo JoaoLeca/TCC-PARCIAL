@@ -12,7 +12,7 @@ from datetime import date
 from barber_bot.intent import classify_intent
 
 
-def build_agent():
+def build_agent(channel: str = "web"):
     if not OPENAI_API_KEY:
         raise RuntimeError("O modo GPT precisa da chave OPENAI_API_KEY. A consulta de serviços e a agenda continuam disponíveis sem ela.")
     initialize_database()
@@ -50,11 +50,17 @@ def build_agent():
             cur = conn.execute("INSERT INTO support_tickets(customer_name,customer_phone,reason) VALUES (?,?,?)", (nome, telefone, motivo))
         return f"Solicitação #{cur.lastrowid} registrada. A equipe entrará em contato durante o expediente."
 
-    system_prompt = f"""Você é o assistente virtual da barbearia. Use consultar_barbearia para obter o nome atual da barbearia. A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Responda em português brasileiro, com clareza e cordialidade. Use ferramentas para preços, agenda e políticas. Nunca invente disponibilidade ou regras. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se nenhum trecho relevante aparecer, diga que não encontrou a informação e encaminhe à equipe. Para fazer uma reserva, oriente a usar a aba Agendar. Para consultar, remarcar ou cancelar, oriente a usar a aba Meus horários com o telefone e o código privado do comprovante. Oriente a nunca enviar o código no chat. Se não souber, houver reclamação, erro ou pedido fora do escopo, encaminhe para humano. Não solicite dados além do necessário. Para endereço, contato, pagamento e expediente, use consultar_barbearia. Para dias de atendimento individuais, use consultar_barbeiros. Essas ferramentas têm os dados operacionais atuais."""
+    booking_instructions = (
+        "Para iniciar uma reserva neste canal, oriente a pessoa a enviar /agendar. "
+        "Para consultar seus horários, remarcar ou cancelar, oriente a usar o site com telefone e código privado; nunca peça o código nesta conversa."
+        if channel == "telegram" else
+        "Para fazer uma reserva, oriente a usar a aba Agendar. Para consultar, remarcar ou cancelar, oriente a usar a aba Meus horários com o telefone e o código privado do comprovante. Oriente a nunca enviar o código no chat."
+    )
+    system_prompt = f"""Você é o assistente virtual da barbearia. Use consultar_barbearia para obter o nome atual da barbearia. A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Responda em português brasileiro, com clareza e cordialidade. Use ferramentas para preços, agenda e políticas. Nunca invente disponibilidade ou regras. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se nenhum trecho relevante aparecer, diga que não encontrou a informação e encaminhe à equipe. {booking_instructions} Se não souber, houver reclamação, erro ou pedido fora do escopo, encaminhe para humano. Não solicite dados além do necessário. Para endereço, contato, pagamento e expediente, use consultar_barbearia. Para dias de atendimento individuais, use consultar_barbeiros. Essas ferramentas têm os dados operacionais atuais."""
     return create_agent(ChatOpenAI(model=OPENAI_MODEL, temperature=0, api_key=OPENAI_API_KEY), tools=[consultar_servicos, consultar_barbeiros, consultar_barbearia, buscar_disponibilidade, consultar_politicas, solicitar_atendimento_humano], system_prompt=system_prompt)
 
 
-def run_agent(messages: list[dict]) -> dict:
+def run_agent(messages: list[dict], *, channel: str = "web") -> dict:
     classification = classify_intent(next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""))
     if classification.confidence < 0.55 or classification.intent == "atendimento_humano":
         from barber_bot.db import connect
@@ -62,7 +68,7 @@ def run_agent(messages: list[dict]) -> dict:
         with connect() as conn:
             ticket = conn.execute("INSERT INTO support_tickets(reason) VALUES (?)", (last_message or "Solicitação com baixa confiança de intenção",))
         return {"content": f"Encaminhei sua solicitação para a equipe (protocolo {ticket.lastrowid}). Pode me informar seu nome e telefone para a equipe retornar?", "intent": classification.intent, "confidence": classification.confidence, "tools_called": ["solicitar_atendimento_humano"]}
-    agent = build_agent()
+    agent = build_agent(channel)
     current = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d/%m/%Y %H:%M")
     result = agent.invoke({"messages": [{"role": "system", "content": f"Data e hora atuais: {current}. A intenção classificada da última mensagem é {classification.intent} (confiança {classification.confidence:.2f})."}, *messages]})
     last = result["messages"][-1]

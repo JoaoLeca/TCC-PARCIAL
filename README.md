@@ -64,6 +64,26 @@ O banco SQLite e o arquivo privado de acessos ficam na instalação local. Após
 
 Em um banco já existente, as escalas de trabalho gravadas são preservadas. Para adotar a nova escala padrão, entre como dono e abra **Informações e escala**. Defina a folga de Rafael na segunda, Diego na quarta e Alecio no sábado. A agenda bloqueia domingos, e o painel avisa se houver reservas futuras que impeçam a alteração de escala.
 
+## Bot do Telegram
+
+O bot compartilha o mesmo assistente, catálogo, regras de disponibilidade e banco SQLite do site. Em uma conversa privada, use `/start` para ver as opções, `/horarios` para consultar vagas ou `/agendar` para reservar. A reserva só é gravada depois que o cliente revisa e confirma o resumo. Ela aparece na agenda do painel da equipe e o bot envia o código privado da reserva ao cliente. Não encaminhe esse código a outras pessoas.
+
+Crie um bot com `@BotFather` no Telegram e copie o token apenas para o `.env` local:
+
+```text
+TELEGRAM_BOT_TOKEN=token_fornecido_pelo_BotFather
+```
+
+Não coloque o token no GitHub nem o envie em mensagens. Para dúvidas com IA, configure também `OPENAI_API_KEY`, habilite créditos de API e crie o índice RAG conforme a seção **Criar índice da base de conhecimento**. Agendamento e consulta guiada de disponibilidade funcionam sem a chave da OpenAI.
+
+Com a API e o Streamlit já iniciados em dois terminais, inicie o bot em um terceiro, na pasta do projeto:
+
+```bash
+uv run python -m barber_bot.telegram_bot
+```
+
+O bot usa long polling (`getUpdates`), portanto não precisa de endereço público, webhook ou porta aberta no roteador para receber mensagens. Deixe esse terminal e o computador ligados enquanto o bot estiver em uso. Para encerrar, pressione `Ctrl+C`. O histórico temporário da conversa expira após 30 minutos; reservas confirmadas permanecem no banco e no painel.
+
 O acesso por função e a separação entre a agenda individual e a da equipe seguem o modelo documentado pelo [Square Appointments](https://squareup.com/help/us/en/article/5350-create-staff-member-profiles-for-square-appointments) e pelo [Fresha](https://www.fresha.com/help-center/knowledge-base/team/100687-create-permission-roles). A validação no servidor segue a [orientação de autorização da OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html).
 
 ## Criar índice da base de conhecimento

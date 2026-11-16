@@ -77,6 +77,11 @@ def initialize_database(path: str | Path | None = None) -> None:
             username TEXT NOT NULL REFERENCES staff_accounts(username) ON DELETE CASCADE,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS telegram_sessions (
+            chat_id TEXT PRIMARY KEY,
+            state_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS schedule_blocks (
             id INTEGER PRIMARY KEY,
             barber_id INTEGER NOT NULL REFERENCES barbers(id),
