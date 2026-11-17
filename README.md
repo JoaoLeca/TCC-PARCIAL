@@ -37,6 +37,12 @@ uv run streamlit run src/streamlit_app.py
 
 Abra o endereço local exibido pelo Streamlit. A API fica em `http://127.0.0.1:8000/docs`.
 
+### Servidor temporário no Windows para demonstração
+
+O Windows deste computador já tem o cliente SSH. Dê duplo clique em `IniciarDemoWindows.bat` para abrir a API, a interface, o bot Telegram e um túnel Pinggy em janelas separadas. O túnel encaminha a porta 8501 em `127.0.0.1` e mostra uma URL HTTPS pública na janela **Link publico Pinggy**. Se quiser abrir apenas o túnel após iniciar os serviços, use `AbrirLinkPublico.bat`. A confirmação da chave SSH é salva em `ssh_known_hosts` na pasta do projeto; se o SSH pedir uma senha, pressione Enter.
+
+Não precisa instalar outro programa, criar uma conta, ter domínio ou alterar o roteador. A URL é temporária e muda quando o túnel reinicia; qualquer pessoa que receba o link poderá abrir o site. Para acessar a área da equipe, acrescente `/equipe` ao endereço público e entre com uma conta cadastrada. Mantenha as janelas abertas e impeça o computador de suspender durante a demonstração. Feche as janelas ao terminar.
+
 ## Agenda da equipe
 
 Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A página pública de reservas não exibe o atalho. O endereço da equipe mostra apenas a tela de login até validar uma conta cadastrada. A API confere a sessão e as permissões a cada operação interna.
@@ -65,6 +71,26 @@ uv run python -m barber_bot.staff rafael --barber Rafael --replace
 O banco SQLite e o arquivo privado de acessos ficam na instalação local. Após criar ou redefinir uma conta, valide o acesso em `/equipe`.
 
 Em um banco já existente, as escalas de trabalho gravadas são preservadas. Para adotar a nova escala padrão, entre como dono e abra **Informações e escala**. Defina a folga de Rafael na segunda, Diego na quarta e Alecio no sábado. A agenda bloqueia domingos, e o painel avisa se houver reservas futuras que impeçam a alteração de escala.
+
+## Bot do Telegram
+
+O bot compartilha o mesmo assistente, catálogo, regras de disponibilidade e banco SQLite do site. Em uma conversa privada, use `/start` para ver as opções, `/horarios` para consultar vagas ou `/agendar` para reservar. A reserva só é gravada depois que o cliente revisa e confirma o resumo. Ela aparece na agenda do painel da equipe e o bot envia o código privado da reserva ao cliente. Não encaminhe esse código a outras pessoas.
+
+Crie um bot com `@BotFather` no Telegram e copie o token apenas para o `.env` local:
+
+```text
+TELEGRAM_BOT_TOKEN=token_fornecido_pelo_BotFather
+```
+
+Não coloque o token no GitHub nem o envie em mensagens. Para dúvidas com IA, configure também `OPENAI_API_KEY`, habilite créditos de API e crie o índice RAG conforme a seção **Criar índice da base de conhecimento**. Agendamento e consulta guiada de disponibilidade funcionam sem a chave da OpenAI.
+
+Com a API e o Streamlit já iniciados em dois terminais, inicie o bot em um terceiro, na pasta do projeto:
+
+```bash
+uv run python -m barber_bot.telegram_bot
+```
+
+O bot usa long polling (`getUpdates`), portanto não precisa de endereço público, webhook ou porta aberta no roteador para receber mensagens. Deixe esse terminal e o computador ligados enquanto o bot estiver em uso. Para encerrar, pressione `Ctrl+C`. O histórico temporário da conversa expira após 30 minutos; reservas confirmadas permanecem no banco e no painel.
 
 O acesso por função e a separação entre a agenda individual e a da equipe seguem o modelo documentado pelo [Square Appointments](https://squareup.com/help/us/en/article/5350-create-staff-member-profiles-for-square-appointments) e pelo [Fresha](https://www.fresha.com/help-center/knowledge-base/team/100687-create-permission-roles). A validação no servidor segue a [orientação de autorização da OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html).
 
