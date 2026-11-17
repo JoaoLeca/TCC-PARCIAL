@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import logging
 import re
+from secrets import token_hex
 import sys
 import time
 from typing import Any
@@ -17,19 +18,23 @@ from barber_bot.assistant import run_agent
 from barber_bot.config import (
     MAX_BOOKING_DAYS,
     MIN_BOOKING_DAYS,
-    OPENAI_API_KEY,
     TELEGRAM_BOT_TOKEN,
 )
 from barber_bot.db import connect, initialize_database
+from barber_bot.conversation import sanitize_chat_messages
 from barber_bot.presentation import format_price
 from barber_bot.schedule import (
     BookingError,
     TZ,
     availability,
     create_appointment,
+    get_booking_request,
     list_barbers,
     list_services,
+    replace_access_code,
 )
+from barber_bot.telemetry import record_booking, record_handoff, record_interaction
+from barber_bot.support import SupportError, create_support_request, get_customer_request, update_support_contact
 
 log = logging.getLogger("barber_bot.telegram")
 API_ROOT = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN
@@ -79,22 +84,55 @@ def _load_state(chat_id: str) -> dict[str, Any]:
             updated = datetime.fromisoformat(row["updated_at"])
             if updated.tzinfo is None:
                 updated = updated.replace(tzinfo=timezone.utc)
+            state = json.loads(row["state_json"])
+            if not isinstance(state, dict):
+                raise ValueError("Invalid conversation state")
+            if "access_code" in state:
+                # Older versions stored the bearer secret in completed sessions.
+                state.pop("access_code")
+                _save_state(chat_id, state)
+            if state.get("step") == "confirm" and state.get("request_key"):
+                appointment_id = get_booking_request(f"telegram:{chat_id}:{state['request_key']}")
+                if appointment_id is not None:
+                    state = {"step": "completed", "appointment_id": appointment_id,
+                             "receipt_pending": True, "callback_token": state.get("callback_token")}
+                    _save_state(chat_id, state)
+                    record_booking(f"telegram:{chat_id}", appointment_id, channel="telegram")
             if datetime.now(timezone.utc) - updated > SESSION_TTL:
+                if state.get("appointment_id"):
+                    state = {"step": "completed", **_receipt_fields(state)}
+                    _save_state(chat_id, state)
+                    return state
                 conn.execute("DELETE FROM telegram_sessions WHERE chat_id=?", (chat_id,))
                 return {}
-            return json.loads(row["state_json"])
+            return state
         except (ValueError, TypeError, json.JSONDecodeError):
             conn.execute("DELETE FROM telegram_sessions WHERE chat_id=?", (chat_id,))
             return {}
 
 
 def _clear_state(chat_id: str) -> None:
+    state = _load_state(chat_id)
+    if state.get("appointment_id"):
+        _save_state(chat_id, {"step": "completed", **_receipt_fields(state)})
+        return
     with connect() as conn:
         conn.execute("DELETE FROM telegram_sessions WHERE chat_id=?", (chat_id,))
 
 
+def _receipt_fields(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: state[key] for key in ("appointment_id", "receipt_pending") if key in state}
+
+
 def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": text, "callback_data": data} for text, data in row] for row in rows]}
+
+
+def _flow_keyboard(chat_id: str, state: dict[str, Any], rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
+    # Every rendered menu has its own token: old pages and old flows cannot select current options.
+    state["callback_token"] = token_hex(6)
+    _save_state(chat_id, state)
+    return _keyboard([[(label, f"{state['callback_token']}:{action}") for label, action in row] for row in rows])
 
 
 def send_message(chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> None:
@@ -139,11 +177,12 @@ def _send_dates(chat_id: str, state: dict[str, Any]) -> None:
     state["step"] = "date"
     _save_state(chat_id, state)
     rows = [[item] for item in options]
-    send_message(chat_id, "Para qual dia? Escolha uma das datas disponíveis:", _keyboard(rows))
+    send_message(chat_id, "Para qual dia? Escolha uma das datas disponíveis:", _flow_keyboard(chat_id, state, rows))
 
 
 def _start_flow(chat_id: str, mode: str) -> None:
-    state = {"mode": mode, "step": "service", "history": []}
+    state = {"mode": mode, "step": "service", "history": [], "request_key": token_hex(16),
+             **_receipt_fields(_load_state(chat_id))}
     _save_state(chat_id, state)
     services = list_services()
     rows = [[(f"{s['name']} · {format_price(s['price'])}", f"service:{s['id']}")] for s in services]
@@ -152,7 +191,7 @@ def _start_flow(chat_id: str, mode: str) -> None:
         send_message(chat_id, "Ainda não há serviços cadastrados.")
         return
     intro = "Vamos agendar. Primeiro, escolha o serviço:" if mode == "booking" else "Para consultar horários, escolha o serviço:"
-    send_message(chat_id, intro, _keyboard(rows))
+    send_message(chat_id, intro, _flow_keyboard(chat_id, state, rows))
 
 
 def _show_barbers(chat_id: str, state: dict[str, Any]) -> None:
@@ -160,7 +199,7 @@ def _show_barbers(chat_id: str, state: dict[str, Any]) -> None:
     _save_state(chat_id, state)
     rows = [[(barber["name"], f"barber:{barber['id']}")] for barber in list_barbers()]
     rows.append([("Qualquer profissional", "barber:0")])
-    send_message(chat_id, "Tem preferência por profissional?", _keyboard(rows))
+    send_message(chat_id, "Tem preferência por profissional?", _flow_keyboard(chat_id, state, rows))
 
 
 def _slot_text(slot: dict[str, Any]) -> str:
@@ -172,13 +211,20 @@ def _show_slots(chat_id: str, state: dict[str, Any], offset: int = 0) -> None:
     day = date.fromisoformat(state["date"])
     slots = availability(state["service_id"], day, state.get("barber_id"))
     if not slots:
-        _clear_state(chat_id)
-        send_message(chat_id, "Não encontrei horários livres nessa data. Tente /horarios ou /agendar para escolher outra.")
+        state["step"] = "no_slots"
+        state.pop("slot_choices", None)
+        rows = [[("Outro profissional", "change_barber"), ("Outro dia", "change_day")]]
+        send_message(chat_id, "Não encontrei horários livres nessa data para essa escolha. "
+                     "Mantive o serviço selecionado. Podemos tentar outro profissional ou outro dia.",
+                     _flow_keyboard(chat_id, state, rows))
         return
+    if offset >= len(slots):
+        offset = 0
     state["step"] = "slot"
     state["slot_offset"] = offset
     _save_state(chat_id, state)
     page = slots[offset:offset + SLOTS_PER_PAGE]
+    state["slot_choices"] = {str(index): slot for index, slot in enumerate(page, start=offset)}
     rows = []
     for index, slot in enumerate(page, start=offset):
         label = _slot_text(slot)
@@ -186,6 +232,7 @@ def _show_slots(chat_id: str, state: dict[str, Any], offset: int = 0) -> None:
         rows.append([(f"{label} · {action}", f"slot:{index}")])
     if offset + SLOTS_PER_PAGE < len(slots):
         rows.append([("Mais horários", "more")])
+    rows.append([("Outro profissional", "change_barber"), ("Outro dia", "change_day")])
     service = next((s for s in list_services() if s["id"] == state["service_id"]), None)
     state["slots_count"] = len(slots)
     _save_state(chat_id, state)
@@ -194,7 +241,7 @@ def _show_slots(chat_id: str, state: dict[str, Any], offset: int = 0) -> None:
         intro = f"Horários livres para {service['name'] if service else 'o serviço'} em {date_label}:\nToque em um horário se quiser iniciar a reserva."
     else:
         intro = f"Escolha um horário para {service['name'] if service else 'o serviço'} em {date_label}:"
-    send_message(chat_id, intro, _keyboard(rows))
+    send_message(chat_id, intro, _flow_keyboard(chat_id, state, rows))
 
 
 def _ask_name(chat_id: str, state: dict[str, Any], slot: dict[str, Any]) -> None:
@@ -210,6 +257,19 @@ def _phone_keyboard() -> dict[str, Any]:
         "resize_keyboard": True,
         "one_time_keyboard": True,
     }
+
+
+def _begin_support(chat_id: str, state: dict[str, Any], ticket: dict[str, Any] | None = None) -> None:
+    if ticket is None:
+        ticket = create_support_request(f"telegram:{chat_id}", "telegram", "Cliente solicitou atendimento humano no Telegram.")
+        record_handoff(f"telegram:{chat_id}", ticket["id"], channel="telegram")
+    if ticket.get("customer_name") and ticket.get("customer_phone"):
+        send_message(chat_id, f"Seu atendimento está na fila da equipe. Protocolo #{ticket['id']}.", _main_keyboard())
+        return
+    state = {"step": "support_name", "ticket_id": ticket["id"], **_receipt_fields(state)}
+    _save_state(chat_id, state)
+    send_message(chat_id, f"Solicitação #{ticket['id']} registrada para a equipe. "
+                 "Qual é seu nome para o retorno? Use /cancelar para interromper o preenchimento.")
 
 
 def _show_confirmation(chat_id: str, state: dict[str, Any]) -> None:
@@ -234,7 +294,7 @@ def _show_confirmation(chat_id: str, state: dict[str, Any]) -> None:
         f"Telefone: final {phone_last_four}"
     )
     send_message(chat_id, "Contato registrado.", {"remove_keyboard": True})
-    send_message(chat_id, summary, _keyboard([[ ("✅ Confirmar agendamento", "confirm"), ("Cancelar", "abort") ]]))
+    send_message(chat_id, summary, _flow_keyboard(chat_id, state, [[ ("✅ Confirmar agendamento", "confirm"), ("Interromper", "abort") ]]))
 
 
 def _book(chat_id: str, state: dict[str, Any]) -> None:
@@ -243,26 +303,56 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
             state["customer_name"], state["customer_phone"], state["service_id"],
             state["barber_id"], state["starts_at"], True,
             expected_price=state["expected_price"], expected_duration=state["expected_duration"],
+            request_key=f"telegram:{chat_id}:{state['request_key']}",
         )
     except BookingError as exc:
-        _clear_state(chat_id)
-        send_message(chat_id, f"Não consegui concluir: {exc}\nConsulte os horários novamente com /horarios.")
+        send_message(chat_id, f"Não consegui concluir: {exc}\nVamos consultar os horários novamente.")
+        _show_slots(chat_id, state)
         return
 
     # Persist completion before replying so repeated confirmation clicks do not create a second booking.
-    completed = {"step": "completed", "appointment_id": booking["id"], "access_code": booking["access_code"]}
+    completed = {"step": "completed", "appointment_id": booking["id"],
+                 "receipt_pending": True, "callback_token": state["callback_token"]}
     _save_state(chat_id, completed)
+    _deliver_receipt(chat_id, completed, booking)
+
+
+def _deliver_receipt(chat_id: str, state: dict[str, Any], booking: dict[str, Any] | None = None) -> None:
+    if booking is None:
+        # The ID comes only from this private chat's persisted successful booking.
+        with connect() as conn:
+            row = conn.execute("""
+                SELECT a.id,a.status,a.starts_at,b.name AS barber,s.name AS service,
+                       COALESCE(a.price_at_booking,s.price) AS price
+                FROM appointments a JOIN barbers b ON b.id=a.barber_id
+                JOIN services s ON s.id=a.service_id WHERE a.id=?
+            """, (state["appointment_id"],)).fetchone()
+        if not row:
+            send_message(chat_id, "Não encontrei o comprovante. Fale com a equipe da barbearia.")
+            return
+        booking = dict(row)
+    state["receipt_pending"] = True
+    _save_state(chat_id, state)
+    # Reconcile the event on every delivery attempt, including a retry after a
+    # failure between the booking commit and telemetry commit. This is idempotent.
+    record_booking(f"telegram:{chat_id}", booking["id"], channel="telegram")
+    if "access_code" not in booking:
+        booking["access_code"] = replace_access_code(booking["id"], None)
     start = datetime.fromisoformat(booking["starts_at"]).astimezone(TZ)
+    heading = "Agendamento cancelado." if booking.get("status") == "cancelled" else "✅ Agendamento confirmado!"
     send_message(
         chat_id,
-        "✅ Agendamento confirmado!\n"
+        f"{heading}\n"
         f"Protocolo: #{booking['id']}\n"
         f"{booking['service']} com {booking['barber']}\n"
         f"{start:%d/%m/%Y às %H:%M} · {format_price(booking['price'])}\n\n"
         f"Código privado para consultar ou alterar pelo site: {booking['access_code']}\n"
-        "Guarde esse código e não o compartilhe. Para iniciar outra reserva, envie /agendar.",
+        "Guarde esse código e não o compartilhe. Vale o código do comprovante mais recente. "
+        "Para reenviar o comprovante, use /comprovante. Para iniciar outra reserva, envie /agendar.",
         _main_keyboard(),
     )
+    state["receipt_pending"] = False
+    _save_state(chat_id, state)
 
 
 def _handle_callback(callback: dict[str, Any]) -> None:
@@ -277,13 +367,35 @@ def _handle_callback(callback: dict[str, Any]) -> None:
         return
     chat_id = str(chat.get("id"))
     state = _load_state(chat_id)
-    data = str(callback.get("data", ""))
+    token, _, data = str(callback.get("data", "")).partition(":")
+    if not token or token != state.get("callback_token"):
+        send_message(chat_id, "Essa opção expirou. Use os botões mais recentes ou envie /agendar ou /horarios.", _main_keyboard())
+        return
+    try:
+        _dispatch_callback(chat_id, state, data)
+    except (ValueError, KeyError):
+        send_message(chat_id, "Essa opção não está disponível. Use os botões mais recentes.")
+
+
+def _dispatch_callback(chat_id: str, state: dict[str, Any], data: str) -> None:
+    if state.get("step") == "completed":
+        if data == "confirm":
+            if state.get("receipt_pending"):
+                _deliver_receipt(chat_id, state)
+            else:
+                send_message(chat_id, "Esse agendamento já foi confirmado. Use /comprovante para reenviar os dados ou /agendar para fazer outro.", _main_keyboard())
+        else:
+            send_message(chat_id, "Esse fluxo já terminou. A reserva confirmada continua ativa.", _main_keyboard())
+        return
     if data == "abort":
         _clear_state(chat_id)
-        send_message(chat_id, "Agendamento cancelado. Se precisar, envie /agendar.", _main_keyboard())
+        send_message(chat_id, "Interrompi o fluxo. Se precisar, envie /agendar.", _main_keyboard())
         return
-    if state.get("step") == "completed" and data == "confirm":
-        send_message(chat_id, "Esse agendamento já foi confirmado. Para fazer outro, envie /agendar.", _main_keyboard())
+    if data == "change_day" and state.get("step") in {"slot", "no_slots"}:
+        _send_dates(chat_id, state)
+        return
+    if data == "change_barber" and state.get("step") in {"slot", "no_slots"}:
+        _show_barbers(chat_id, state)
         return
     if data.startswith("service:") and state.get("step") == "service":
         service_id = int(data.split(":", 1)[1])
@@ -304,18 +416,24 @@ def _handle_callback(callback: dict[str, Any]) -> None:
         _show_barbers(chat_id, state)
     elif data.startswith("barber:") and state.get("step") == "barber":
         barber_id = int(data.split(":", 1)[1])
+        if barber_id and not any(item["id"] == barber_id for item in list_barbers()):
+            raise ValueError("Unknown professional")
         state["barber_id"] = barber_id or None
         state["slot_offset"] = 0
         _show_slots(chat_id, state)
     elif data == "more" and state.get("step") == "slot":
         _show_slots(chat_id, state, state.get("slot_offset", 0) + SLOTS_PER_PAGE)
     elif data.startswith("slot:") and state.get("step") == "slot":
-        index = int(data.split(":", 1)[1])
+        index = str(int(data.split(":", 1)[1]))
+        selected = state.get("slot_choices", {}).get(index)
         slots = availability(state["service_id"], date.fromisoformat(state["date"]), state.get("barber_id"))
-        if index < 0 or index >= len(slots):
+        slot = next((item for item in slots if selected and all(
+            item[key] == selected[key] for key in ("barber_id", "starts_at", "ends_at")
+        )), None)
+        if slot is None:
+            send_message(chat_id, "Esse horário acabou de ser ocupado ou mudou. Escolha outra opção atualizada.")
             _show_slots(chat_id, state, 0)
             return
-        slot = slots[index]
         if state["mode"] == "availability":
             state["mode"] = "booking"
         _ask_name(chat_id, state, slot)
@@ -341,6 +459,29 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
     contact = message.get("contact")
     sender_id = str(message.get("from", {}).get("id", ""))
     command = raw_text.split()[0].split("@", 1)[0].lower() if raw_text.startswith("/") else ""
+    if command == "/atendimento":
+        ticket = get_customer_request(f"telegram:{chat_id}", "telegram")
+        if ticket is None:
+            send_message(chat_id, "Nenhuma solicitação de atendimento nesta conversa. Use /atendente para falar com a equipe.")
+        else:
+            status = {"open": "Aberto", "in_progress": "Em andamento", "resolved": "Resolvido"}[ticket["status"]]
+            updated = datetime.fromisoformat(ticket["updated_at"])
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            updated = updated.astimezone(TZ)
+            send_message(chat_id, f"Atendimento #{ticket['id']}\nSituação: {status}\n"
+                         f"Atualizado em {updated:%d/%m/%Y às %H:%M}.\n"
+                         "Use /atendimento para consultar novamente.")
+        return
+    state = _load_state(chat_id)
+    if command == "/comprovante":
+        if state.get("appointment_id"):
+            _deliver_receipt(chat_id, state)
+        else:
+            send_message(chat_id, "Não há comprovante desta conversa. Use /agendar ou fale com a equipe.")
+        return
+    if state.get("receipt_pending"):
+        _deliver_receipt(chat_id, state)
 
     if command in {"/start", "/help"}:
         _clear_state(chat_id)
@@ -348,6 +489,7 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
             chat_id,
             "Olá! Sou o assistente da Barbearia Imperial. Posso responder dúvidas, consultar horários e fazer reservas.\n\n"
             "Use /horarios para consultar disponibilidade, /agendar para reservar ou /cancelar para interromper um fluxo. "
+            "Use /atendente para solicitar a equipe e /atendimento para acompanhar seu protocolo. "
             "Para proteger seus dados, o agendamento deve ser feito nesta conversa privada.",
             _main_keyboard(),
         )
@@ -356,6 +498,9 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         _clear_state(chat_id)
         send_message(chat_id, "Tudo bem, interrompi o fluxo. Envie /agendar ou /horarios quando quiser.", _main_keyboard())
         return
+    if command == "/atendente":
+        _begin_support(chat_id, state)
+        return
     if command == "/agendar" or raw_text.casefold() in {"📅 agendar", "agendar", "quero agendar"}:
         _start_flow(chat_id, "booking")
         return
@@ -363,9 +508,8 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         _start_flow(chat_id, "availability")
         return
 
-    state = _load_state(chat_id)
     step = state.get("step")
-    if step == "name":
+    if step in {"name", "support_name"}:
         name = raw_text
         if not name and contact:
             name = str(contact.get("first_name", "")).strip()
@@ -373,16 +517,18 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
             send_message(chat_id, "Envie um nome com até 120 caracteres. Para sair, use /cancelar.")
             return
         state["customer_name"] = name
-        state["step"] = "phone"
+        state["step"] = "support_phone" if step == "support_name" else "phone"
         _save_state(chat_id, state)
         send_message(
             chat_id,
+            "Agora envie seu telefone com DDD ou use o botão para compartilhá-lo.\n"
+            "A equipe usará esse contato para atender sua solicitação." if step == "support_name" else
             "Agora envie seu telefone com DDD ou use o botão para compartilhá-lo.\n"
             "Ele será usado para identificar esta reserva no painel.",
             _phone_keyboard(),
         )
         return
-    if step == "phone":
+    if step in {"phone", "support_phone"}:
         if contact:
             if str(contact.get("user_id", "")) != sender_id:
                 send_message(chat_id, "Compartilhe somente seu próprio contato ou digite seu telefone.")
@@ -391,20 +537,32 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         else:
             phone = raw_text
         digits = re.sub(r"\D", "", phone)
-        if not 8 <= len(digits) <= 15:
+        if not 10 <= len(digits) <= 15:
             send_message(chat_id, "Não consegui validar o telefone. Envie o número com DDD ou compartilhe seu contato.", _phone_keyboard())
+            return
+        if step == "support_phone":
+            try:
+                ticket = update_support_contact(f"telegram:{chat_id}", "telegram", state["ticket_id"],
+                                                state["customer_name"], phone)
+            except SupportError as exc:
+                send_message(chat_id, str(exc), _phone_keyboard())
+                return
+            _clear_state(chat_id)
+            send_message(chat_id, f"Contato registrado para a equipe. Seu protocolo é #{ticket['id']}. "
+                         "A equipe retornará pelo telefone informado. Use /atendimento para consultar a situação.", _main_keyboard())
             return
         state["customer_phone"] = phone
         _show_confirmation(chat_id, state)
         return
 
-    if step in {"service", "date", "barber", "slot", "confirm"}:
+    if step in {"service", "date", "barber", "slot", "confirm", "no_slots"}:
         prompts = {
             "service": "Escolha um serviço usando os botões ou envie /cancelar.",
             "date": "Escolha uma data usando os botões ou envie /cancelar.",
             "barber": "Escolha um profissional usando os botões ou envie /cancelar.",
             "slot": "Escolha um horário usando os botões ou envie /cancelar.",
             "confirm": "Use os botões para confirmar ou cancelar a reserva.",
+            "no_slots": "Use os botões para tentar outro profissional ou outro dia, ou envie /cancelar.",
         }
         send_message(chat_id, prompts[step])
         return
@@ -415,24 +573,29 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
     if len(raw_text) > MAX_CHAT_LENGTH:
         send_message(chat_id, "A mensagem ficou longa demais. Envie uma pergunta mais curta.")
         return
-    if not OPENAI_API_KEY:
-        send_message(chat_id, "O atendimento com IA está desativado no momento. Você ainda pode usar /horarios e /agendar.", _main_keyboard())
-        return
     if _rate_limited(chat_id):
         send_message(chat_id, "Você enviou várias mensagens em pouco tempo. Aguarde um minuto e tente novamente.")
         return
 
     history = state.get("history", []) if state.get("step") in {"chat", "completed"} else []
-    history = [*history, {"role": "user", "content": raw_text}][-10:]
+    history = sanitize_chat_messages([*history, {"role": "user", "content": raw_text}][-10:])
+    result: dict[str, Any] = {}
+    started = time.monotonic()
     try:
-        result = run_agent(history, channel="telegram")
+        result = run_agent(history, channel="telegram", session_id=f"telegram:{chat_id}")
         answer = str(result.get("content", "Não consegui formular uma resposta agora."))
     except Exception:
         log.warning("Falha na resposta de IA para uma conversa do Telegram.")
         answer = "Não consegui consultar a IA agora. Você pode tentar novamente ou usar /horarios e /agendar."
-    history.append({"role": "assistant", "content": answer})
-    _save_state(chat_id, {"step": "chat", "history": history[-10:]})
+        result = {"content": answer, "outcome": "unavailable"}
+    record_interaction(f"telegram:{chat_id}", history, result,
+                       int((time.monotonic() - started) * 1000), channel="telegram")
+    history = sanitize_chat_messages([*history, {"role": "assistant", "content": answer}])
+    answer = history[-1]["content"]
+    _save_state(chat_id, {"step": "chat", "history": history[-10:], **_receipt_fields(state)})
     send_message(chat_id, answer, _main_keyboard())
+    if result.get("support_request"):
+        _begin_support(chat_id, state, result["support_request"])
 
 
 def handle_update(update: dict[str, Any]) -> None:
@@ -462,6 +625,9 @@ def main() -> None:
             {"command": "horarios", "description": "Consultar disponibilidade"},
             {"command": "agendar", "description": "Fazer um agendamento"},
             {"command": "cancelar", "description": "Interromper o fluxo atual"},
+            {"command": "comprovante", "description": "Reenviar o último comprovante"},
+            {"command": "atendente", "description": "Solicitar atendimento humano"},
+            {"command": "atendimento", "description": "Consultar situação do atendimento"},
             {"command": "help", "description": "Ver ajuda"},
         ]})
     except TelegramError:

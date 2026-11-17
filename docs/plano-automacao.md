@@ -1,12 +1,14 @@
 # Plano de automação de atendimento
 
-O objetivo é resolver pelo chat as dúvidas frequentes e a busca de vagas, encaminhar à equipe os casos que precisam de intervenção e levar o mesmo atendimento ao WhatsApp. As etapas abaixo descrevem trabalho futuro.
+O objetivo é resolver pelo chat as dúvidas frequentes e a busca de vagas, encaminhar à equipe os casos que precisam de intervenção e levar o mesmo atendimento ao WhatsApp. O site e o Telegram já têm os fluxos locais descritos abaixo. A integração com WhatsApp permanece como etapa futura.
 
 ## Ponto de partida
 
-O site oferece atendimento na aba **Conversar** e no painel flutuante, com histórico compartilhado na sessão. A rota `/chat` do FastAPI usa GPT para interpretar mensagens, consulta o catálogo e a agenda para obter dados atuais e busca as políticas na base de conhecimento. O GPT requer `OPENAI_API_KEY`. A API registra solicitações de atendimento humano, e a equipe ainda precisa de uma fila para assumir e acompanhar esses casos.
+O site oferece atendimento na aba **Conversar** e no painel flutuante, com histórico compartilhado na sessão. A rota `/chat` consulta serviços e disponibilidade com contexto e alternativas mesmo sem chave de IA. O GPT complementa as perguntas abertas e as políticas na base de conhecimento quando `OPENAI_API_KEY` está configurada. A área privada da equipe já oferece fila de atendimento com responsável, contato, observações e resolução.
 
-As reservas são feitas em **Agendar**, onde o cliente pode baixar o comprovante. **Meus horários** exige o telefone e o código privado da reserva para consultar, remarcar ou cancelar.
+As reservas são feitas em **Agendar**, onde o cliente pode baixar o comprovante, e pelo fluxo guiado `/agendar` do Telegram. Confirmações repetidas usam a mesma reserva. **Meus horários** exige o telefone e o código privado para consultar, remarcar ou cancelar. O Telegram oferece `/comprovante` para recuperar a entrega e `/atendente` para contato humano.
+
+Os testes locais usam dados sintéticos. Conforme a decisão de 17/11/2026, as chamadas reais ao modelo e as mensagens reais do Telegram aguardam credenciais no ambiente local. O roteiro de demonstração e avaliação está em [roteiro de automação](../eval/roteiro_automacao.md). As métricas de latência, encaminhamentos e reservas vêm dos eventos do sistema. FCR e acerto das intenções dependem de dados de referência e avaliação efetivamente coletados.
 
 ## Onde cada parte funciona
 
@@ -15,9 +17,10 @@ As reservas são feitas em **Agendar**, onde o cliente pode baixar o comprovante
 | Site público | Oferecer o chat, apresentar vagas e direcionar para **Agendar** ou **Meus horários** quando necessário. |
 | API FastAPI | Interpretar pedidos com o GPT, buscar respostas nas fontes do sistema e validar disponibilidade, identidade e confirmação antes de executar operações. |
 | Área privada `/equipe` | Receber encaminhamentos, atribuir responsáveis e acompanhar a resolução de cada atendimento conforme as permissões da equipe. |
+| Telegram | Consultar serviços e vagas, confirmar reservas e recuperar comprovantes na conversa privada, compartilhando as regras de agenda e a fila da equipe. |
 | WhatsApp Business Platform | Entregar comprovantes e, na etapa seguinte, receber mensagens por webhook e encaminhá-las ao mesmo serviço de atendimento do site. |
 
-## 1. Validar atendimento e encaminhamento no site
+## 1. Atendimento e encaminhamento disponíveis para avaliação
 
 - Responder sobre serviços, preços, duração, profissionais, funcionamento e políticas. Consultar o cadastro para dados atuais e usar a base de conhecimento para as políticas.
 - Entender pedidos como «Tem corte amanhã com o Rafael?». Perguntar apenas o que faltar e oferecer até três horários reais. Quando não houver vagas, oferecer a busca em outra data ou com outro barbeiro.

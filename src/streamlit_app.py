@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 import requests
 import streamlit as st
 
-from barber_bot.config import MAX_BOOKING_DAYS, MIN_BOOKING_DAYS, TIMEZONE
+from barber_bot.config import MAX_BOOKING_DAYS, MIN_BOOKING_DAYS, SHOP_OPEN_DAYS, TIMEZONE
+from barber_bot.calendar_dates import ribeirao_preto_holidays
+from barber_bot.conversation import sanitize_chat_messages
 from barber_bot.presentation import WEEKDAYS, format_price
 
 API = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
@@ -55,7 +57,7 @@ def get_booking_catalog(api_url):
     return get_booking_data("catalog", api_url=api_url)
 
 
-def render_booking_calendar(dates_and_slots, first_day, last_day):
+def render_booking_calendar(dates_and_slots, first_day, last_day, working_days):
     state = st.session_state
     chosen_date = state.get("booking_date")
     if not dates_and_slots.get(chosen_date):
@@ -70,8 +72,10 @@ def render_booking_calendar(dates_and_slots, first_day, last_day):
         month = (chosen_date or first_day).replace(day=1)
     previous_month = (month - timedelta(days=1)).replace(day=1)
     next_month = (month + timedelta(days=32)).replace(day=1)
+    holidays = ribeirao_preto_holidays(month.year)
 
     with st.container(key="booking_calendar", width=440, border=True):
+        st.markdown("#### Escolha uma data")
         if first_month == last_month:
             st.markdown(f"**{MONTHS[month.month - 1]} de {month.year}**")
         else:
@@ -88,21 +92,155 @@ def render_booking_calendar(dates_and_slots, first_day, last_day):
             for week in Calendar(firstweekday=SUNDAY).monthdatescalendar(month.year, month.month):
                 for column, day in zip(st.columns(7, gap=None, wrap=False), week):
                     if day.month == month.month:
-                        column.button(
-                            str(day.day), key=f"booking_day_{day.isoformat()}", width="stretch",
-                            type="primary" if day == chosen_date else "secondary",
-                            disabled=not dates_and_slots.get(day),
-                            on_click=state.__setitem__, args=("booking_date", day),
-                        )
+                        count = len({slot["starts_at"] for slot in dates_and_slots.get(day, [])})
+                        if not first_day <= day <= last_day:
+                            status, reason = "outside", "Fora do período de reservas online"
+                        elif day.weekday() not in SHOP_OPEN_DAYS:
+                            status, reason = "closed", "Barbearia fechada neste dia da semana"
+                        elif day.weekday() not in working_days:
+                            status, reason = "closed", "Sem atendimento para o profissional escolhido"
+                        elif not count:
+                            status, reason = "unavailable", "Sem horários disponíveis para este serviço"
+                        else:
+                            status, reason = "available", f"{count} horários disponíveis"
+                        if holiday := holidays.get(day):
+                            status = "holiday"
+                            reason = f"Feriado · {holiday}. {reason}"
+                        with column.container(key=f"calendar_{status}_{day.isoformat()}"):
+                            st.button(
+                                str(day.day), key=f"booking_day_{day.isoformat()}", width="stretch",
+                                type="primary" if day == chosen_date else "secondary",
+                                disabled=not count, help=f"{day:%d/%m} · {reason}",
+                                on_click=state.__setitem__, args=("booking_date", day),
+                            )
 
-        st.caption("🟢 Com vagas · ⚪ Sem vaga ou fora do período")
-        if chosen_date is not None:
-            st.caption(f"Data selecionada: {WEEKDAYS[chosen_date.weekday()]}, {chosen_date:%d/%m/%Y}.")
+        st.html('''<div class="booking-legend" aria-label="Legenda do calendário">
+          <span><i class="available"></i>Com vagas</span>
+          <span><i class="holiday"></i>Feriado</span>
+          <span><i class="unavailable"></i>Sem vagas</span>
+          <span><i class="closed"></i>Sem atendimento / fora do período</span>
+        </div>''')
     return chosen_date
+
+
+def save_booking_contact():
+    st.session_state.booking_contact = {
+        "name": st.session_state.get("booking_name", ""),
+        "phone": st.session_state.get("booking_phone", ""),
+    }
+
+
+def select_chat_booking(service, slot):
+    state = st.session_state
+    if state.get("booking_pending"):
+        state.chat_selection_error = "Recupere a confirmação pendente em Agendar antes de escolher outra reserva."
+        return
+    state.pop("chat_selection_error", None)
+    state.pop("booking_slot", None)
+    state.pop("booking_start", None)
+    state.chat_booking_choice = {"service": service, "slot": slot}
+    state.public_section = "Agendar"
+    state.floating_chat_open = False
+    state.support_contact_open = False
+    get_booking_catalog.clear()
+
+
+def prepare_chat_booking(catalog):
+    state = st.session_state
+    choice = state.get("chat_booking_choice")
+    if not choice or not catalog:
+        return None
+    state.pop("chat_booking_choice")
+    service = next((item for item in catalog["services"] if item["id"] == choice["service"]["id"]), None)
+    if service is None or any(service[field] != choice["service"][field] for field in ("price", "duration_minutes")):
+        state.booking_selection_notice = "O serviço foi atualizado. Consulte as opções novamente antes de escolher."
+        return None
+    slot = choice["slot"]
+    if not any(barber["id"] == slot["barber_id"] for barber in catalog["barbers"]):
+        state.booking_selection_notice = "O profissional não está mais disponível. Consulte as opções novamente."
+        return None
+    state.booking_service = service
+    state.booking_barber = slot["barber_id"]
+    state.booking_date = datetime.fromisoformat(slot["starts_at"]).date()
+    state.booking_calendar_month = state.booking_date.replace(day=1)
+    state.pop("booking_receipt", None)
+    state.pop("booking_availability", None)
+    return slot
+
+
+def select_booking_time(starts_at):
+    st.session_state.booking_start = starts_at
+    st.session_state.pop("booking_slot", None)
+
+
+def render_booking_times(slots):
+    state = st.session_state
+    by_start = {}
+    for option in slots:
+        by_start.setdefault(option["starts_at"], []).append(option)
+    previous = state.get("booking_slot")
+    if previous is not None and previous not in slots:
+        state.pop("booking_slot", None)
+        state.pop("booking_start", None)
+    elif previous is not None and not state.get("booking_start"):
+        state.booking_start = previous["starts_at"]
+    if state.get("booking_start") not in by_start:
+        state.pop("booking_start", None)
+    with st.container(key="booking_times", border=False):
+        for period, hours in (("Manhã", range(0, 12)), ("Tarde e noite", range(12, 24))):
+            starts = [start for start in by_start if datetime.fromisoformat(start).hour in hours]
+            if not starts:
+                continue
+            st.caption(period)
+            for offset in range(0, len(starts), 4):
+                for column, start in zip(st.columns(4, gap="small", wrap=False), starts[offset:offset + 4]):
+                    column.button(
+                        f"{datetime.fromisoformat(start):%H:%M}", key=f"booking_time_{start}",
+                        type="primary" if start == state.get("booking_start") else "secondary",
+                        width="stretch", on_click=select_booking_time, args=(start,),
+                    )
+    choices = by_start.get(state.get("booking_start"), [])
+    if len(choices) == 1:
+        state.booking_slot = choices[0]
+    elif choices:
+        st.markdown("#### Quem vai atender você?")
+        with st.container(key="booking_professionals"):
+            for column, option in zip(st.columns(len(choices), gap="small"), choices):
+                column.button(
+                    option["barber"], key=f"booking_professional_{option['barber_id']}", width="stretch",
+                    type="primary" if option == state.get("booking_slot") else "secondary",
+                    on_click=state.__setitem__, args=("booking_slot", option),
+                )
+    return state.get("booking_slot")
+
+
+def submit_booking(payload):
+    state = st.session_state
+    try:
+        response = requests.post(f"{API}/appointments", json=payload, timeout=10)
+        if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+            state.pop("booking_pending", None)
+            detail = response.json().get("detail")
+            state.booking_conflict = detail if isinstance(detail, str) else "Confira seus dados e escolha o horário novamente antes de confirmar."
+            get_booking_catalog.clear()
+            st.rerun()
+        response.raise_for_status()
+        state.booking_receipt = response.json()
+    except requests.RequestException:
+        state.booking_pending = payload
+        st.warning("A confirmação não foi recebida. Tente novamente para recuperar o resultado desta mesma reserva.")
+        return
+    state.pop("booking_pending", None)
+    state.pop("booking_availability", None)
+    state.pop("booking_contact", None)
+    st.rerun()
 
 
 def render_booking(catalog, shop_name):
     state = st.session_state
+    suggested_slot = prepare_chat_booking(catalog)
+    if notice := state.pop("booking_selection_notice", None):
+        st.warning(notice)
     if receipt := state.get("booking_receipt"):
         st.success("Agendamento confirmado!")
         st.markdown(f"**Código da reserva #{receipt['id']}**")
@@ -118,7 +256,15 @@ def render_booking(catalog, shop_name):
             )
         if st.button("Novo agendamento", type="tertiary"):
             del state.booking_receipt
+            state.pop("booking_slot", None)
+            state.pop("booking_start", None)
             st.rerun()
+        return
+
+    if pending := state.get("booking_pending"):
+        st.warning("Aguardando confirmação da sua reserva. Repita a tentativa para recuperar o resultado.")
+        if st.button("Tentar confirmar novamente", type="primary"):
+            submit_booking(pending)
         return
 
     st.markdown("## 1. Encontre um horário")
@@ -157,6 +303,7 @@ def render_booking(catalog, shop_name):
     if criteria != cached_criteria or conflict:
         state.pop("booking_availability", None)
         state.pop("booking_slot", None)
+        state.pop("booking_start", None)
         dates_and_slots = None
         params = {"service_id": service["id"]}
         if barber_id is not None:
@@ -173,7 +320,14 @@ def render_booking(catalog, shop_name):
             st.button("Tentar novamente", key="booking_refresh")
             return
 
-    chosen_date = render_booking_calendar(dates_and_slots, first_day, last_day)
+    if suggested_slot is not None and suggested_slot not in dates_and_slots.get(state.booking_date, []):
+        st.warning("Esse horário mudou ou acabou de ser ocupado. Escolha uma opção atualizada para continuar.")
+        suggested_slot = None
+    working_days = {
+        day for barber in barbers if barber_id is None or barber["id"] == barber_id
+        for day in barber["working_days"] if day in SHOP_OPEN_DAYS
+    }
+    chosen_date = render_booking_calendar(dates_and_slots, first_day, last_day, working_days)
     slot = None
     if chosen_date is None:
         message = "Não há horários para essa escolha no período exibido."
@@ -185,22 +339,30 @@ def render_booking(catalog, shop_name):
         if filters != state.get("booking_filters"):
             state.booking_filters = filters
             state.pop("booking_slot", None)
+            state.pop("booking_start", None)
+        if suggested_slot is not None:
+            state.booking_slot = suggested_slot
+            state.booking_start = suggested_slot["starts_at"]
         slots = sorted(dates_and_slots[chosen_date], key=lambda item: (item["starts_at"], item["barber"]))
-        slot = st.selectbox(
-            "Horário disponível", slots, index=None, key="booking_slot", placeholder="Escolha um horário",
-            format_func=lambda item: f"{datetime.fromisoformat(item['starts_at']):%H:%M} · {item['barber']}",
-        )
+        st.markdown(f"#### Horários disponíveis · {chosen_date:%d/%m}")
+        st.caption("Escolha um horário para continuar. A vaga será verificada novamente na confirmação.")
+        slot = render_booking_times(slots)
     st.button("Atualizar disponibilidade", key="booking_refresh", on_click=state.pop,
               args=("booking_availability", None))
     if slot is None:
         return
 
+    with st.container(key="booking_selection_summary", border=True):
+        st.markdown("**Sua escolha**")
+        show_booking_details({**slot, "service": service["name"], "price": service["price"]})
     st.markdown("## 2. Informe seu contato")
     draft = state.get("booking_contact", {})
-    name = st.text_input("Seu nome", value=draft.get("name", ""), max_chars=120, key="booking_name").strip()
+    name = st.text_input("Seu nome", value=draft.get("name", ""), max_chars=120, key="booking_name",
+                         on_change=save_booking_contact).strip()
     phone = st.text_input(
         "Telefone com DDD", value=draft.get("phone", ""), max_chars=30,
         placeholder="(16) 99999-9999", key="booking_phone",
+        on_change=save_booking_contact,
     ).strip()
     valid_phone = sum(character.isdecimal() for character in phone) >= 10
     if phone and not valid_phone:
@@ -220,22 +382,11 @@ def render_booking(catalog, shop_name):
         "customer_name": name, "customer_phone": phone, "service_id": service["id"],
         "barber_id": slot["barber_id"], "starts_at": slot["starts_at"], "confirmed": True,
         "expected_price": service["price"], "expected_duration": service["duration_minutes"],
+        "request_key": str(uuid.uuid4()), "session_id": state.session_id,
     }
-    try:
-        response = requests.post(f"{API}/appointments", json=payload, timeout=10)
-        if response.status_code == 409:
-            state.booking_contact = {"name": name, "phone": phone}
-            state.booking_conflict = response.json()["detail"]
-            get_booking_catalog.clear()
-            st.rerun()
-        response.raise_for_status()
-        state.booking_receipt = response.json()
-    except requests.RequestException:
-        st.error("Não foi possível verificar a confirmação. Consulte Meus horários antes de tentar novamente.")
-        return
-    state.pop("booking_availability", None)
-    state.pop("booking_contact", None)
-    st.rerun()
+    save_booking_contact()
+    state.booking_pending = payload
+    submit_booking(payload)
 
 
 def request_managed_booking(endpoint, payload):
@@ -395,13 +546,21 @@ def render_managed_bookings():
                 st.rerun()
 
 
-def show_chat_message(role, content):
+def show_chat_message(role, content, booking_options=None, key_prefix=None):
     with st.chat_message(role):
         st.caption("Você" if role == "user" else "Assistente virtual")
         if role == "user":
             st.text(content)
         else:
-            st.markdown(content)
+            st.markdown(content.split("\n\n", 1)[0] if booking_options else content)
+            if booking_options:
+                for index, slot in enumerate(booking_options["slots"]):
+                    start = datetime.fromisoformat(slot["starts_at"])
+                    st.button(
+                        f"{start:%d/%m · %H:%M} · {slot['barber']}", key=f"{key_prefix}_suggestion_{index}",
+                        width="stretch", on_click=select_chat_booking, args=(booking_options["service"], slot),
+                    )
+                st.caption("Escolha uma opção para revisar e confirmar a reserva.")
 
 
 def render_chat(surface, shop_name, *, compact=False):
@@ -409,35 +568,136 @@ def render_chat(surface, shop_name, *, compact=False):
     with st.container(key=f"{surface}_chat_heading"):
         st.markdown("### Atendimento")
         st.caption(f"Assistente virtual · {shop_name}")
+    render_support_tracking(surface)
+    request = state.get("support_request")
+    contact_pending = bool(request and request["status"] != "resolved" and not request.get("contact_provided")
+                           and state.get("support_contact_saved") != request["id"])
+    if state.get("support_contact_open", False):
+        render_support_contact(surface)
+        return
     history = st.container(key=f"{surface}_chat_history", height=250 if compact else 320,
                            border=False, autoscroll=True)
     with history:
         if not state.messages:
             show_chat_message("assistant", "Olá! Posso ajudar com serviços, preços e horários da barbearia.")
-        for message in state.messages:
-            show_chat_message(message["role"], message["content"])
-    prompt = st.chat_input("Escreva sua mensagem", key=f"{surface}_chat_input")
-    st.caption("Para reservar, use Agendar. Use o código privado em Meus horários.")
-    if not prompt or not prompt.strip():
+        for index, message in enumerate(state.messages):
+            show_chat_message(message["role"], message["content"], message.get("booking_options"), f"{surface}_{index}")
+    if state.get("chat_selection_error"):
+        st.warning(state.chat_selection_error)
+    prompt = st.chat_input("Escreva sua mensagem", key=f"{surface}_chat_input", max_chars=4000)
+    retry = False
+    if state.get("chat_error"):
+        st.warning(state.chat_error)
+        retry = st.button("Tentar atendimento novamente", key=f"{surface}_chat_retry")
+    if contact_pending:
+        if st.button("Informar contato para a equipe", key=f"{surface}_human_request", type="tertiary"):
+            state.support_contact_open = True
+            st.rerun()
+    elif not request or request["status"] == "resolved":
+        if st.button("Falar com a equipe", key=f"{surface}_human_request", type="tertiary"):
+            state.pop("support_request", None)
+            state.support_contact_open = True
+            st.rerun()
+    if not retry and (not prompt or not prompt.strip()):
         return
-    state.messages.append({"role": "user", "content": prompt})
+    if not retry:
+        state.messages.extend(sanitize_chat_messages([{"role": "user", "content": prompt}]))
     with history:
-        show_chat_message("user", prompt)
+        if not retry:
+            show_chat_message("user", state.messages[-1]["content"])
         with st.chat_message("assistant"):
             st.caption("Assistente virtual")
             with st.spinner("Consultando o atendimento…"):
-                answer = request_chat_answer(state.session_id, state.messages)
-    state.messages.append({"role": "assistant", "content": answer})
+                result = request_chat_answer(state.session_id, state.messages)
+    if result.get("retryable"):
+        state.chat_error = result["answer"]
+    else:
+        state.pop("chat_error", None)
+        message = {"role": "assistant", "content": result["answer"]}
+        if result.get("booking_options"):
+            message["booking_options"] = result["booking_options"]
+        state.messages.append(message)
+        if result.get("support_request"):
+            state.support_request = result["support_request"]
+            state.support_contact_open = True
     st.rerun()
+
+
+@st.fragment(run_every="10s")
+def render_support_tracking(surface):
+    state = st.session_state
+    request = state.get("support_request")
+    if not request or (surface == "tab" and not tab_chat.open):
+        return
+    try:
+        response = requests.post(f"{API}/support/status", json={
+            "session_id": state.session_id, "ticket_id": request["id"],
+        }, timeout=10)
+        response.raise_for_status()
+        current = response.json()["request"]
+        if current is None:
+            st.info("Nenhum atendimento encontrado nesta conversa.")
+            return
+        state.support_request = current
+        if current["status"] == "resolved" and request["status"] != "resolved" and state.get("support_contact_open"):
+            state.support_contact_open = False
+            st.rerun()
+        if not current["contact_provided"]:
+            return
+        statuses = {"open": "🟡 Aguardando a equipe", "in_progress": "🔵 Em atendimento", "resolved": "🟢 Resolvido"}
+        status, action = st.columns([3, 1], vertical_alignment="center", wrap=False)
+        status.caption(f"#{current['id']} · {statuses[current['status']]}")
+        action.button("Atualizar", key=f"{surface}_support_refresh", type="tertiary")
+    except requests.RequestException:
+        st.caption("Situação do atendimento indisponível.")
+        st.button("Atualizar situação", key=f"{surface}_support_retry", type="tertiary")
+
+
+def render_support_contact(surface):
+    state = st.session_state
+    draft = state.get("support_contact_draft", {})
+    st.markdown("#### Retorno da equipe")
+    st.caption("A equipe fará o retorno pelo telefone informado. Preencha e confirme para solicitar.")
+    with st.form(f"{surface}_support_contact", border=False):
+        name = st.text_input("Nome para retorno", value=draft.get("name", ""), max_chars=120, key=f"{surface}_support_name")
+        phone = st.text_input("Telefone para retorno", value=draft.get("phone", ""), placeholder="(16) 99999-9999", max_chars=30, key=f"{surface}_support_phone")
+        back, send = st.columns([1, 2], gap="small")
+        returned = back.form_submit_button("Voltar", key=f"{surface}_support_back", width="stretch")
+        submitted = send.form_submit_button("Solicitar atendimento", key=f"{surface}_support_send", type="primary", width="stretch")
+    if returned or submitted:
+        state.support_contact_draft = {"name": name, "phone": phone}
+    if returned:
+        state.support_contact_open = False
+        st.rerun()
+    if submitted:
+        try:
+            response = requests.post(f"{API}/support/requests", json={
+                "session_id": state.session_id,
+                "customer_name": name, "customer_phone": phone,
+            }, timeout=10)
+            response.raise_for_status()
+            state.support_request = response.json()
+            if state.get("support_contact_saved") != state.support_request["id"]:
+                state.messages.append({"role": "assistant", "content":
+                    f"Pedido #{state.support_request['id']} enviado à equipe. O retorno será pelo telefone informado. Posso continuar ajudando você por aqui como assistente virtual."})
+            state.support_contact_saved = state.support_request["id"]
+            state.support_contact_open = False
+            st.rerun()
+        except requests.RequestException as exc:
+            message = "Não foi possível enviar seu contato. Tente novamente."
+            if exc.response is not None and exc.response.status_code == 422:
+                message = "Preencha seu nome e um telefone válido com DDD."
+            st.error(message)
 
 
 def request_chat_answer(session_id, messages):
     try:
-        response = requests.post(f"{API}/chat", json={"session_id": session_id, "messages": messages}, timeout=90)
+        recent = [{"role": message["role"], "content": message["content"][:4000]} for message in messages[-16:]]
+        response = requests.post(f"{API}/chat", json={"session_id": session_id, "messages": recent}, timeout=90)
         response.raise_for_status()
-        return response.json()["answer"]
+        return response.json()
     except requests.RequestException:
-        return "O assistente virtual está indisponível agora. Você pode usar Agendar ou consultar a aba Informações."
+        return {"answer": "O atendimento está indisponível agora. Tente novamente ou use Agendar.", "retryable": True}
 
 
 def render_floating_chat(shop_name):
@@ -476,29 +736,102 @@ st.html("""
   }
   .st-key-booking_calendar_days button {
     min-width: 0;
+    min-height: 42px;
     padding-inline: 0;
     margin: 2px auto;
     width: calc(100% - 4px);
+    border-radius: 10px;
+    font-weight: 600;
   }
-  .st-key-booking_calendar_days button[data-testid="stBaseButton-secondary"]:not(:disabled) {
-    border-color: #329365;
-    background-color: color-mix(in srgb, #329365 20%, transparent);
+  .st-key-booking_calendar_days [class*="st-key-calendar_available_"] button {
+    color: light-dark(#17633b, #a7efc4);
+    border-color: light-dark(#b9dec9, #3b7450);
+    background: light-dark(#e9f7ee, #203c2b);
   }
-  .st-key-booking_calendar_days button[data-testid="stBaseButton-secondary"]:hover:not(:disabled) {
-    background-color: color-mix(in srgb, #329365 36%, transparent);
+  .st-key-booking_calendar_days [class*="st-key-calendar_holiday_"] button {
+    color: light-dark(#805a0c, #f9dc8a);
+    border-color: light-dark(#ead58f, #8a723b);
+    background: light-dark(#fff5cf, #493e22);
+  }
+  .st-key-booking_calendar_days [class*="st-key-calendar_holiday_"] button:disabled {
+    opacity: 0.6;
+  }
+  .st-key-booking_calendar_days [class*="st-key-calendar_holiday_"] button[data-testid="stBaseButton-primary"] {
+    color: light-dark(#624300, #fff0b9);
+    background: light-dark(#ffe6a0, #775a1e);
+    border-color: #d5ae48;
+    box-shadow: inset 0 0 0 1px #d5ae48;
+  }
+  .st-key-booking_calendar_days [class*="st-key-calendar_unavailable_"] button:disabled {
+    color: light-dark(#9a424b, #e3a2aa);
+    border-color: light-dark(#f0c5ca, #694047);
+    background: light-dark(#fce8eb, #412b30);
+    opacity: 1;
+  }
+  .st-key-booking_calendar_days button:hover:not(:disabled),
+  .st-key-booking_times button:hover {
+    filter: brightness(1.13);
   }
   .st-key-booking_calendar_days button[data-testid="stBaseButton-primary"] {
     color: white;
-    background-color: #176643;
+    background: #19834a;
     border-color: #56c78d;
     box-shadow: inset 0 0 0 1px #56c78d;
     font-weight: 700;
   }
-  .st-key-booking_calendar_days button:disabled {
+  .st-key-booking_calendar_days [class*="st-key-calendar_outside_"] button:disabled,
+  .st-key-booking_calendar_days [class*="st-key-calendar_closed_"] button:disabled {
     color: inherit;
     opacity: 0.43;
     border-color: transparent;
     background: transparent;
+  }
+  .st-key-booking_calendar_days button:focus-visible,
+  .st-key-booking_times button:focus-visible {
+    outline: 3px solid #56c78d;
+    outline-offset: 2px;
+  }
+  .booking-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.9rem;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    padding-top: 0.65rem;
+  }
+  .booking-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .booking-legend i { width: 9px; height: 9px; border-radius: 3px; }
+  .booking-legend .available { background: #52b77a; }
+  .booking-legend .holiday { background: #d4b24d; }
+  .booking-legend .unavailable { background: #c77481; }
+  .booking-legend .closed { background: #858585; }
+  .st-key-booking_times button {
+    min-height: 40px;
+    border-radius: 8px;
+    color: light-dark(#393e3b, #e1e5e2);
+    border-color: light-dark(#d4dbd6, #4b514c);
+    background: light-dark(#f9fbfa, #242824);
+    padding: 0.25rem;
+  }
+  .st-key-booking_times button:hover:not(:disabled) {
+    border-color: #68b885;
+    background: light-dark(#edf7f0, #2a392e);
+  }
+  .st-key-booking_times [data-testid="stColumn"] {
+    min-width: 0;
+  }
+  .st-key-booking_times [data-testid="stVerticalBlock"] {
+    gap: 0.5rem;
+  }
+  .st-key-booking_times button[data-testid="stBaseButton-primary"],
+  .st-key-booking_times button[data-testid="stBaseButton-primary"]:hover:not(:disabled) {
+    color: white;
+    background: #19834a;
+    border-color: #68d495;
+    box-shadow: inset 0 0 0 1px #68d495;
+  }
+  @media (max-width: 480px) {
+    .st-key-booking_times button p { font-size: 0.75rem; }
   }
   .st-key-imperial_chat_dock {
     --chat-edge: clamp(0.75rem, 2vw, 1.5rem);
@@ -598,7 +931,7 @@ st.html("""
   }
 </style>
 """)
-st.title(f"💈 {shop_name}")
+st.title(shop_name)
 st.caption("Atendimento e agendamentos")
 
 if "session_id" not in st.session_state:

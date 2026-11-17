@@ -2,6 +2,17 @@
 
 Protótipo acadêmico de atendimento com agenda, API, interface web e busca RAG integrada ao GPT. O backend valida horários e impede conflitos antes de gravar. A interface e o serviço rodam em Windows, macOS e Linux com Python 3.11 ou 3.12; também há Docker para execução multiplataforma.
 
+## Atualização de 17 de novembro de 2026
+
+- **Atendimento automatizado** com contexto, consultas ao catálogo e à agenda, até três sugestões reais e alternativas de dia ou profissional. As regras para horários numéricos funcionam no site e nas mensagens livres do Telegram, com esclarecimento de pedidos ambíguos ou negados.
+- **Sugestões clicáveis no site** que preenchem serviço, profissional, data e horário em **Agendar**. O sistema consulta novamente as vagas e o catálogo e exige a confirmação final da reserva.
+- **Agenda mais visual** com horários agrupados, seleção de profissional após a hora em **Sem preferência**, feriados de Ribeirão Preto em amarelo e interface simplificada no calendário e no chat.
+- **Atendimento humano** com formulário separado da conversa, protocolo criado após a confirmação do cliente no site, acompanhamento da situação e fila privada para a equipe assumir e resolver. O retorno da equipe é pelo telefone cadastrado.
+- **Confiabilidade e privacidade** com confirmação idempotente, preservação do contato ao trocar de data, botões do Telegram vinculados às vagas exatas, recuperação de comprovantes e proteção de códigos privados no histórico enviado ao modelo.
+- **Avaliação do TCC** com telemetria de interações e reservas, exportação pseudonimizada, métricas de latência e encaminhamento e roteiro de aceitação e avaliação com participantes.
+
+As validações locais usam testes automatizados e ensaios no navegador com banco de avaliação separado. O teste real do Telegram depende de `TELEGRAM_BOT_TOKEN`, e o uso da IA depende de `OPENAI_API_KEY`. A coleta de resultados com participantes está descrita no [roteiro de avaliação](eval/roteiro_automacao.md).
+
 ## Dados usados
 
 Os parâmetros iniciais vieram de `ParametrosBarbearia.docx`. A Barbearia Imperial funciona de segunda a sábado, das 08:00 às 12:00 e das 13:30 às 20:00. Na escala padrão, Rafael folga na segunda, Diego na quarta e Alecio no sábado. A base de conhecimento tem 15 documentos curtos. O telefone e endereço foram fornecidos como dados de demonstração.
@@ -10,7 +21,21 @@ Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedê
 
 Em **Meus horários**, informe o telefone e o código privado do comprovante para consultar, remarcar ou cancelar uma reserva. Cada código dá acesso a uma única reserva. Use **Agendar** para criar reservas. O chat ajuda com informações e disponibilidade.
 
+O atendimento guiado consulta serviços, preços e vagas mesmo sem chave de IA. Experimente «Quero agendar corte», seguido de «amanhã à tarde». Ele aproveita o contexto, apresenta até três opções reais e procura alternativas quando a combinação estiver indisponível. Perguntas abertas e políticas com recuperação RAG usam a IA quando configurada. Se o serviço de IA falhar, o atendimento oferece consultas guiadas e encaminhamento à equipe.
+
+No site, as opções retornadas pelo chat são clicáveis e abrem **Agendar** com serviço, profissional, data e horário preenchidos. A disponibilidade e o catálogo são consultados novamente ao escolher. A reserva exige revisão e confirmação explícita.
+
+Pedidos numéricos como «depois das 15h», «a partir das 15h», «antes das 15h», «entre 10h e 12h» e «às 15h30» funcionam sem IA, assim como «o último horário de sábado». Intervalos e limites de término consideram a duração do serviço. Expressões ambíguas pedem esclarecimento.
+
+Em **Conversar** ou no painel flutuante, use **Falar com a equipe**. A tela de contato é aberta primeiro. O protocolo só é criado ao preencher nome e telefone e confirmar em **Solicitar atendimento**. O telefone desse formulário fica disponível à equipe autorizada e é coletado fora da conversa enviada ao modelo. A equipe fará o retorno pelo telefone informado. A conversa do site continua com o assistente virtual.
+
+O agendamento mostra um resumo da escolha e os feriados de Ribeirão Preto em amarelo. A disponibilidade em feriados segue a escala e os bloqueios cadastrados. O contato preenchido permanece ao trocar de dia. Se a resposta da confirmação se perder, **Tentar confirmar novamente** recupera a mesma reserva por uma chave de confirmação. O comprovante recuperado contém um novo código privado, que substitui o anterior.
+
 O [plano de automação de atendimento](docs/plano-automacao.md) descreve as próximas entregas para o chat do site, a área privada da equipe e o WhatsApp.
+
+Quando o cliente escolhe **Sem preferência**, cada horário aparece uma única vez. Após selecionar a hora, ele escolhe entre os profissionais disponíveis. Se houver apenas um, a seleção é automática e o resumo informa quem atenderá.
+
+Na conversa do site, a linha do protocolo mostra **Aguardando a equipe**, **Em atendimento** ou **Resolvido** e atualiza a cada dez segundos enquanto aberto. O botão **Atualizar** permite consultar imediatamente. No Telegram, use `/atendimento` para consultar o protocolo mais recente, inclusive após sua resolução. A consulta fica vinculada à conversa de origem.
 
 ## Executar localmente
 
@@ -48,6 +73,7 @@ Não precisa instalar outro programa, criar uma conta, ter domínio ou alterar o
 Compartilhe `http://127.0.0.1:8501/equipe` com a equipe na instalação local. A página pública de reservas não exibe o atalho. O endereço da equipe mostra apenas a tela de login até validar uma conta cadastrada. A API confere a sessão e as permissões a cada operação interna.
 
 - O dono pode consultar e gerenciar a agenda de todos os profissionais. Cada barbeiro gerencia apenas sua própria agenda.
+- Em **Atendimento**, a equipe encontra os protocolos do site e do Telegram. Um barbeiro pode assumir um chamado livre e gerenciar os seus, enquanto o dono acompanha todos. Ao assumir, o responsável acessa o contato, registra observações e move o chamado para **Resolvido**. A API impede dois profissionais de assumir o mesmo chamado e preserva os chamados de instalações anteriores.
 - **Agenda** abre no dia atual e oferece atalhos para hoje e amanhã, além de filtros por data e situação. O dono também pode filtrar por profissional. Em **Balcão**, a equipe pode registrar reservas feitas presencialmente ou por telefone, de hoje até 30 dias à frente.
 - Entregue o código privado ao cliente ao confirmar uma reserva no balcão. Para reservas anteriores à mudança ou em caso de perda, abra a reserva na agenda e emita outro código após verificar a identidade do cliente. A emissão invalida o código anterior.
 - Em **Bloqueios**, a equipe pode reservar intervalos ou dias inteiros para folgas e férias. O sistema informa os códigos das reservas confirmadas que precisam ser resolvidas antes de bloquear o período.
@@ -94,6 +120,8 @@ O bot usa long polling (`getUpdates`), portanto não precisa de endereço públi
 
 O acesso por função e a separação entre a agenda individual e a da equipe seguem o modelo documentado pelo [Square Appointments](https://squareup.com/help/us/en/article/5350-create-staff-member-profiles-for-square-appointments) e pelo [Fresha](https://www.fresha.com/help-center/knowledge-base/team/100687-create-permission-roles). A validação no servidor segue a [orientação de autorização da OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html).
 
+No Telegram, `/atendente` inicia a coleta de nome e telefone para retorno da equipe, fora da conversa com IA. `/comprovante` recupera o comprovante mais recente ligado à conversa privada e renova o código de acesso. `/cancelar` interrompe a conversa de agendamento. Para cancelar uma reserva confirmada, use **Meus horários** no site.
+
 ## Criar índice da base de conhecimento
 
 Depois de configurar a chave GPT, rode na pasta do projeto:
@@ -115,6 +143,15 @@ docker compose up --build
 A interface abre em `http://localhost:8501` e a documentação da API em `http://localhost:8000/docs`. A pasta `data/` fica montada para preservar o banco e o índice entre reinicializações.
 
 ## Testes e avaliação
+
+O [roteiro de aceitação da automação](eval/roteiro_automacao.md) descreve como demonstrar reserva confirmada, alternativas sem vagas e atendimento humano, além da avaliação com os baselines existentes. A exportação usa sessões pseudonimizadas e omite mensagens e contatos.
+
+```bash
+uv run python eval/export_logs.py --out eval/telemetria.csv
+uv run python eval/metrics.py --latency eval/telemetria.csv --operations eval/telemetria.csv
+```
+
+Os eventos de reserva são deduplicados e separados das interações para calcular latência. FCR depende dos rótulos preenchidos pelos avaliadores.
 
 ```bash
 uv run pytest

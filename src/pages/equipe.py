@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from inspect import signature
 
 import requests
@@ -11,6 +11,7 @@ from barber_bot.presentation import WEEKDAYS, format_price
 
 API = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 STATUS = {"confirmed": "Confirmado", "cancelled": "Cancelado"}
+SUPPORT_STATUS = {"open": "Aguardando", "in_progress": "Em andamento", "resolved": "Resolvido"}
 
 
 class StaffRequestError(Exception):
@@ -195,6 +196,13 @@ def label_time(value):
     return f"{appointment_time(value):%d/%m/%Y às %Hh%M}"
 
 
+def label_support_time(value):
+    when = datetime.fromisoformat(value)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return f"{when.astimezone(TZ):%d/%m/%Y às %Hh%M}"
+
+
 def select_professional(member, key, allow_all=False):
     if member["role"] == "barber":
         st.caption(f"Profissional · {member['display_name']}")
@@ -348,6 +356,75 @@ def edit_services():
         st.error(str(exc))
 
 
+def support_queue(member):
+    st.header("Atendimento humano")
+    st.caption("Assuma uma solicitação para acessar o contato do cliente e dar continuidade à conversa.")
+    status = st.selectbox("Situação do atendimento", [None, *SUPPORT_STATUS],
+                          format_func=lambda value: SUPPORT_STATUS.get(value, "Todos"), key="staff_support_status")
+    st.button("Atualizar fila", key="staff_support_refresh")
+    try:
+        records = call_api("GET", "staff/support", params={"status": status} if status else None)
+        if not records:
+            st.info("Nenhuma solicitação para este filtro.")
+            return
+        st.dataframe([{
+            "Protocolo": record["id"], "Situação": SUPPORT_STATUS[record["status"]],
+            "Canal": record["channel"], "Responsável": record["assigned_to"] or "Aguardando",
+            "Abertura": label_support_time(record["created_at"]), "Motivo": record["reason"],
+        } for record in records], hide_index=True)
+        by_id = {record["id"]: record for record in records}
+        ticket_id = st.selectbox("Abrir atendimento", list(by_id), index=None, key="staff_support_ticket",
+                                 format_func=lambda value: f"#{value} · {by_id[value]['reason'][:70]}")
+        if ticket_id is None:
+            return
+        ticket = by_id[ticket_id]
+        st.subheader(f"Atendimento #{ticket_id}")
+        st.write(ticket["reason"])
+        st.caption(f"{SUPPORT_STATUS[ticket['status']]} · Responsável: {ticket['assigned_to'] or 'Aguardando'}")
+        if ticket["status"] == "open" and ticket["assigned_to"] is None:
+            if st.button("Assumir atendimento", type="primary", key=f"staff_support_claim_{ticket_id}"):
+                call_api("PATCH", f"staff/support/{ticket_id}", data={"claim": True})
+                st.session_state.staff_success = f"Atendimento #{ticket_id} assumido."
+                st.rerun()
+        can_manage = member["role"] == "owner" or ticket["assigned_to"] == member["username"]
+        if not can_manage:
+            return
+        st.text(f"Cliente: {ticket['customer_name'] or 'Nome não informado'}")
+        st.text(f"Telefone: {ticket['customer_phone'] or 'Contato ainda não informado'}")
+        if not ticket["customer_phone"]:
+            st.info("O cliente pode informar seu contato pelo formulário de atendimento na conversa.")
+        with st.expander("Contexto da conversa"):
+            st.caption("Últimas interações até a abertura do atendimento. Dados privados e texto integral não são exibidos.")
+            if ticket["history"]:
+                st.dataframe([{"Data": item["created_at"], "Intenção": item["intent"],
+                               "Ações": item["tools_called"], "Resultado": item["outcome"]}
+                              for item in ticket["history"]], hide_index=True)
+            else:
+                st.info("Sem interações registradas para este atendimento.")
+        with st.expander("Observações da equipe", expanded=bool(ticket["notes"])):
+            for note in ticket["notes"]:
+                st.caption(f"{note['author']} · {label_support_time(note['created_at'])}")
+                st.write(note["note"])
+            if not ticket["notes"]:
+                st.caption("Nenhuma observação registrada.")
+        note = st.text_area("Nova observação", max_chars=1000, key=f"staff_support_note_{ticket_id}",
+                            help="Registre o encaminhamento. Evite dados privados; use o campo de contato para o telefone.")
+        left, right = st.columns(2)
+        if left.button("Salvar observação", disabled=not note.strip(), key=f"staff_support_save_{ticket_id}"):
+            call_api("PATCH", f"staff/support/{ticket_id}", data={"note": note.strip()})
+            st.session_state.staff_success = "Observação salva."
+            st.rerun()
+        if ticket["status"] != "resolved" and right.button("Resolver atendimento", key=f"staff_support_resolve_{ticket_id}"):
+            data = {"status": "resolved"}
+            if note.strip():
+                data["note"] = note.strip()
+            call_api("PATCH", f"staff/support/{ticket_id}", data=data)
+            st.session_state.staff_success = f"Atendimento #{ticket_id} resolvido."
+            st.rerun()
+    except StaffRequestError as exc:
+        st.error(str(exc))
+
+
 def edit_information():
     st.header("Informações e expediente")
     try:
@@ -425,7 +502,7 @@ def main():
     if success := st.session_state.pop("staff_success", None):
         st.success(success)
     sections = [("Agenda", lambda: agenda(member)), ("Balcão", lambda: counter_booking(member)),
-                ("Bloqueios", lambda: manage_blocks(member))]
+                ("Bloqueios", lambda: manage_blocks(member)), ("Atendimento", lambda: support_queue(member))]
     if member["role"] == "owner":
         sections.extend([("Serviços", edit_services), ("Informações e escala", edit_information)])
     tab_options = {"on_change": "rerun", "key": "staff_section"} if "on_change" in signature(st.tabs).parameters else {}

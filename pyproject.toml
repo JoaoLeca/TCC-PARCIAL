@@ -12,6 +12,7 @@ dependencies = [
   "streamlit>=1.40,<2.0",
   "requests>=2.32,<3.0",
   "python-dotenv>=1.0,<2.0",
+  "python-dateutil>=2.9,<5.0",
   "tzdata>=2024.1",
   "langchain>=1.0,<2.0",
   "langgraph>=1.0,<2.0",

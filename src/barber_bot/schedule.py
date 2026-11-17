@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta
 from hashlib import sha256
 from pathlib import Path
 from secrets import token_urlsafe
+import json
 from barber_bot.config import MIN_BOOKING_DAYS, MAX_BOOKING_DAYS, SHOP_OPEN_DAYS, TIMEZONE
 from barber_bot.db import connect, phone_key
 from zoneinfo import ZoneInfo
@@ -161,15 +162,36 @@ def availability(service_id: int, appointment_date: date, barber_id: int | None 
     return result
 
 
-def create_appointment(customer_name: str, customer_phone: str, service_id: int, barber_id: int, starts_at: str, confirmed: bool, path: str | Path | None = None, *, days_range: bool = True, expected_price: float | None = None, expected_duration: int | None = None) -> dict:
+def get_booking_request(request_key: str, path: str | Path | None = None) -> int | None:
+    with connect(path) as conn:
+        row = conn.execute("SELECT appointment_id FROM booking_requests WHERE request_hash=?",
+                           (_access_digest(request_key),)).fetchone()
+    return row["appointment_id"] if row else None
+
+
+def create_appointment(customer_name: str, customer_phone: str, service_id: int, barber_id: int, starts_at: str, confirmed: bool, path: str | Path | None = None, *, days_range: bool = True, expected_price: float | None = None, expected_duration: int | None = None, request_key: str | None = None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita da pessoa antes de gravar o agendamento.")
     name, phone = customer_name.strip(), customer_phone.strip()
     if not name or not phone:
         raise BookingError("Nome e telefone são necessários para concluir o agendamento.")
     start = _parse_start(starts_at)
+    payload_hash = _access_digest(json.dumps([name, phone_key(phone), service_id, barber_id, start.isoformat(),
+                                            expected_price, expected_duration], ensure_ascii=False))
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if request_key:
+            previous = conn.execute("SELECT * FROM booking_requests WHERE request_hash=?",
+                                    (_access_digest(request_key),)).fetchone()
+            if previous:
+                if previous["payload_hash"] != payload_hash:
+                    raise BookingError("Esta confirmação pertence a outra escolha. Revise os dados antes de tentar novamente.")
+                row = conn.execute("""SELECT a.*,b.name AS barber,s.name AS service,a.price_at_booking AS price
+                    FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id
+                    WHERE a.id=?""", (previous["appointment_id"],)).fetchone()
+                if row["status"] != "confirmed":
+                    raise BookingError("Esta reserva já foi cancelada. Inicie um novo agendamento.")
+                return {**dict(row), "access_code": _issue_access_code(conn, row["id"])}
         service = conn.execute("SELECT * FROM services WHERE id=?", (service_id,)).fetchone()
         barber = conn.execute("SELECT * FROM barbers WHERE id=?", (barber_id,)).fetchone()
         if not service or not barber:
@@ -187,6 +209,9 @@ def create_appointment(customer_name: str, customer_phone: str, service_id: int,
         _check_blocks(conn, barber_id, start, end)
         cursor = conn.execute("INSERT INTO appointments(customer_name,customer_phone,barber_id,service_id,starts_at,ends_at,price_at_booking) VALUES (?,?,?,?,?,?,?)", (name, phone, barber_id, service_id, start.isoformat(), end.isoformat(), service["price"]))
         access_code = _issue_access_code(conn, cursor.lastrowid)
+        if request_key:
+            conn.execute("INSERT INTO booking_requests(request_hash,payload_hash,appointment_id) VALUES (?,?,?)",
+                         (_access_digest(request_key), payload_hash, cursor.lastrowid))
         row = conn.execute("SELECT a.*, b.name AS barber, s.name AS service, a.price_at_booking AS price FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id WHERE a.id=?", (cursor.lastrowid,)).fetchone()
         return {**dict(row), "access_code": access_code}
 

@@ -1,6 +1,6 @@
 from datetime import date, datetime, time, timedelta
 from sqlite3 import IntegrityError
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -13,6 +13,7 @@ from barber_bot.schedule import (
     replace_access_code, reschedule_appointment, reschedule_options,
 )
 from barber_bot.staff import StaffMember, authenticate, get_staff_member, revoke_session
+from barber_bot.support import SupportError, list_staff_requests, update_staff_request
 
 
 router = APIRouter(prefix="/staff", tags=["Equipe"])
@@ -88,6 +89,13 @@ class WorkingDaysUpdate(BaseModel):
     working_days: list[Annotated[int, Field(ge=0, le=6)]] = Field(min_length=1, max_length=7)
 
 
+class SupportUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    claim: bool = False
+    status: Literal["open", "in_progress", "resolved"] | None = None
+    note: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
 def _scope(member, barber_id):
     if member.role == "barber":
         if barber_id not in (None, member.barber_id):
@@ -116,6 +124,22 @@ def login(payload: LoginIn, response: Response):
 @protected.get("/me")
 def staff_profile(member: Staff):
     return member
+
+
+@protected.get("/support")
+def support_queue(member: Staff, status: Literal["open", "in_progress", "resolved"] | None = None):
+    try:
+        return list_staff_requests(member, status)
+    except SupportError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@protected.patch("/support/{ticket_id}")
+def support_update(ticket_id: int, payload: SupportUpdate, member: Staff):
+    try:
+        return update_staff_request(ticket_id, member, **payload.model_dump())
+    except SupportError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @protected.post("/logout", status_code=204)

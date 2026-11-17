@@ -37,6 +37,32 @@ def test_booking_succeeds_and_conflict_is_rejected(db):
         create_appointment("Bia", "16999990001", 1, slot["barber_id"], slot["starts_at"], True, db)
 
 
+def test_confirmation_retry_is_idempotent_and_payload_bound(db):
+    _, slot = get_working_barber_date(db)
+    arguments = ("Ana", "16999990000", 1, slot["barber_id"], slot["starts_at"], True, db)
+    first = create_appointment(*arguments, request_key="unique-request-key")
+    retried = create_appointment(*arguments, request_key="unique-request-key")
+    assert first["id"] == retried["id"]
+    assert first["access_code"] != retried["access_code"]
+    with connect(db) as conn:
+        assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 1
+    with pytest.raises(BookingError, match="outra escolha"):
+        create_appointment("Bia", *arguments[1:], request_key="unique-request-key")
+
+
+def test_concurrent_confirmation_creates_one_reservation(db):
+    from concurrent.futures import ThreadPoolExecutor
+    _, slot = get_working_barber_date(db)
+    def confirm():
+        return create_appointment("Ana", "16999990000", 1, slot["barber_id"], slot["starts_at"],
+                                  True, db, request_key="same-concurrent-request")
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        bookings = list(workers.map(lambda _: confirm(), range(2)))
+    assert bookings[0]["id"] == bookings[1]["id"]
+    with connect(db) as conn:
+        assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 1
+
+
 def test_overlapping_different_start_time_is_rejected(db):
     _, slot = get_working_barber_date(db)
     start = datetime.fromisoformat(slot["starts_at"])

@@ -1,4 +1,6 @@
 import importlib.util
+import csv
+import sqlite3
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "eval" / "metrics.py"
@@ -40,3 +42,92 @@ def test_session_duration_uses_first_and_last_interaction():
         {"session_id": "b", "created_at": "2026-11-01 11:00:00"},
     ])
     assert result == {"n": 2, "mean_minutes": 2.5}
+
+
+def test_fcr_does_not_infer_resolution_from_telemetry_or_missing_human_labels():
+    result = metrics.fcr_metrics([
+        {"outcome": "answered"},
+        {"outcome": "booking_confirmed"},
+        {"expected_task_achieved": "1"},
+        {"expected_task_achieved": "1", "escalated": "0", "repeated_question": ""},
+        {"expected_task_achieved": "1", "escalated": "0", "repeated_question": "0"},
+    ])
+    assert result == {"scenarios": 1, "resolved_first_contact": 1, "fcr": 1.0}
+    assert metrics.fcr_metrics([{"outcome": "answered"}])["fcr"] is None
+
+
+def test_response_latency_excludes_booking_events_and_reports_tail():
+    result = metrics.response_metrics([
+        {"response_ms": "100", "outcome": "answered"},
+        {"response_ms": "300", "outcome": "escalated"},
+        {"response_ms": "0", "outcome": "booking_confirmed"},
+        {"response_ms": "-3", "outcome": "error"},
+        {"response_ms": "nan"},
+        {"response_ms": "inf"},
+        {"response_ms": "not measured"},
+        {"response_ms": None},
+    ])
+    assert result == {"n": 2, "mean_ms": 200.0, "median_ms": 200.0, "p95_ms": 300.0}
+
+
+def test_operational_metrics_distinguish_responses_sessions_and_saved_bookings():
+    result = metrics.automation_metrics([
+        {"session_id": "a", "outcome": "answered", "channel": "web"},
+        {"session_id": "a", "outcome": "booking_confirmed", "channel": "web"},
+        {"session_id": "a", "outcome": "booking_confirmed", "channel": "web"},
+        {"session_id": "b", "outcome": "escalated", "channel": "telegram"},
+        {"session_id": "b", "outcome": "escalated", "channel": "telegram"},
+        {"session_id": "c", "outcome": "unavailable", "channel": "web"},
+        {"session_id": "d", "outcome": "error", "channel": "web"},
+    ])
+    assert result["interactions"] == 5
+    assert result["sessions"] == 4
+    assert result["escalations"] == 2
+    assert result["escalation_rate"] == 2 / 5
+    assert result["escalated_sessions"] == 1
+    assert result["session_escalation_rate"] == 1 / 4
+    assert result["completed_bookings"] == 2
+    assert result["booked_sessions"] == 1
+    assert result["errors"] == 1
+    assert result["unavailable"] == 1
+    assert result["channels"] == {"web": 3, "telegram": 2}
+
+
+def test_operational_metrics_accept_old_exports_without_inventing_outcomes():
+    result = metrics.automation_metrics([{"session_id": "a", "response_ms": "12"}])
+    assert result["interactions"] == 1
+    assert result["outcomes"] == {"unknown": 1}
+    assert result["completed_bookings"] == 0
+    assert metrics.automation_metrics([])["escalation_rate"] is None
+
+
+def test_export_omits_messages_hashes_sessions_and_deduplicates_booking_events(tmp_path):
+    spec = importlib.util.spec_from_file_location("evaluation_export", MODULE_PATH.with_name("export_logs.py"))
+    exporter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(exporter)
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE interaction_logs (id INTEGER PRIMARY KEY, session_id TEXT, created_at TEXT, user_message TEXT, intent TEXT, tools_called TEXT, outcome TEXT, latency_ms INTEGER)")
+        conn.executemany("INSERT INTO interaction_logs VALUES (?,?,?,?,?,?,?,?)", [
+            (1, "telegram:12345", "2026-11-17 12:00:00", "Meu telefone 16999990000", "agendar", "consultar_disponibilidade", "answered", 20),
+            (2, "telegram:12345", "2026-11-17 12:00:01", "Reserva #7", "agendar", "", "booking_confirmed", 0),
+            (3, "telegram:12345", "2026-11-17 12:00:02", "Reserva #7", "agendar", "", "booking_confirmed", 0),
+            (4, "web-uuid", "2026-11-17 12:00:03", "Reserva #7", "agendar", "", "booking_confirmed", 0),
+        ])
+        first = tmp_path / "first.csv"
+        second = tmp_path / "second.csv"
+        assert exporter.export_logs(conn, first) == 3
+        exporter.export_logs(conn, second)
+    assert first.read_bytes() == second.read_bytes()
+    content = first.read_text(encoding="utf-8")
+    assert "16999990000" not in content
+    assert "telegram:12345" not in content
+    assert "Reserva #7" not in content
+    with first.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert set(rows[0]) == {"session_id", "created_at", "intent", "response_ms", "channel", "outcome", "tools_called"}
+    assert rows[0]["session_id"] == rows[1]["session_id"]
+    assert rows[0]["session_id"] != rows[2]["session_id"]
+    assert rows[0]["channel"] == "telegram"
+    assert rows[2]["channel"] == "web"
+    assert metrics.automation_metrics(rows)["completed_bookings"] == 2

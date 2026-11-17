@@ -10,12 +10,17 @@ from barber_bot.operations import shop_profile
 from barber_bot.schedule import availability, list_services, list_barbers
 from datetime import date
 from barber_bot.intent import classify_intent
+from barber_bot.availability_conversation import availability_answer, basic_answer
+from barber_bot.conversation import normalize_text, sanitize_chat_messages
+import re
+from uuid import uuid4
 
 
-def build_agent(channel: str = "web"):
+def build_agent(channel: str = "web", session_id: str | None = None):
     if not OPENAI_API_KEY:
         raise RuntimeError("O modo GPT precisa da chave OPENAI_API_KEY. A consulta de serviços e a agenda continuam disponíveis sem ela.")
     initialize_database()
+    session_id = session_id or f"adhoc:{uuid4()}"
 
     @tool
     def consultar_servicos() -> list[dict]:
@@ -43,12 +48,9 @@ def build_agent(channel: str = "web"):
         return search_knowledge(pergunta)
 
     @tool
-    def solicitar_atendimento_humano(motivo: str, nome: str = "", telefone: str = "") -> str:
-        """Abre solicitação de atendimento humano para reclamações, baixa confiança ou pedidos fora do escopo."""
-        from barber_bot.db import connect
-        with connect() as conn:
-            cur = conn.execute("INSERT INTO support_tickets(customer_name,customer_phone,reason) VALUES (?,?,?)", (nome, telefone, motivo))
-        return f"Solicitação #{cur.lastrowid} registrada. A equipe entrará em contato durante o expediente."
+    def solicitar_atendimento_humano(motivo: str) -> str:
+        """Orienta o cliente a confirmar atendimento humano pela interface ou pelo comando /atendente."""
+        return "O encaminhamento depende da confirmação do cliente. Oriente a usar Falar com a equipe no site ou /atendente no Telegram."
 
     booking_instructions = (
         "Para iniciar uma reserva neste canal, oriente a pessoa a enviar /agendar. "
@@ -60,17 +62,42 @@ def build_agent(channel: str = "web"):
     return create_agent(ChatOpenAI(model=OPENAI_MODEL, temperature=0, api_key=OPENAI_API_KEY), tools=[consultar_servicos, consultar_barbeiros, consultar_barbearia, buscar_disponibilidade, consultar_politicas, solicitar_atendimento_humano], system_prompt=system_prompt)
 
 
-def run_agent(messages: list[dict], *, channel: str = "web") -> dict:
-    classification = classify_intent(next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""))
-    if classification.confidence < 0.55 or classification.intent == "atendimento_humano":
-        from barber_bot.db import connect
-        last_message = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        with connect() as conn:
-            ticket = conn.execute("INSERT INTO support_tickets(reason) VALUES (?)", (last_message or "Solicitação com baixa confiança de intenção",))
-        return {"content": f"Encaminhei sua solicitação para a equipe (protocolo {ticket.lastrowid}). Pode me informar seu nome e telefone para a equipe retornar?", "intent": classification.intent, "confidence": classification.confidence, "tools_called": ["solicitar_atendimento_humano"]}
-    agent = build_agent(channel)
-    current = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d/%m/%Y %H:%M")
-    result = agent.invoke({"messages": [{"role": "system", "content": f"Data e hora atuais: {current}. A intenção classificada da última mensagem é {classification.intent} (confiança {classification.confidence:.2f})."}, *messages]})
-    last = result["messages"][-1]
-    tools_called = [call.get("name", "") for message in result["messages"] for call in getattr(message, "tool_calls", [])]
-    return {"content": last.content if isinstance(last.content, str) else str(last.content), "intent": classification.intent, "confidence": classification.confidence, "tools_called": tools_called, "messages": result["messages"]}
+def _handoff(messages, session_id, channel):
+    next_step = "Envie /atendente para confirmar." if channel == "telegram" else "Clique em Falar com a equipe e confirme o formulário para solicitar atendimento."
+    return {"content": f"Posso orientar você a falar com a equipe. {next_step}",
+            "intent": "atendimento_humano", "confidence": 1.0, "tools_called": [],
+            "support_offer": True, "outcome": "offered", "mode": "guided"}
+
+
+def run_agent(messages: list[dict], *, channel: str = "web", session_id: str | None = None) -> dict:
+    session_id = session_id or f"adhoc:{uuid4()}"
+    messages = sanitize_chat_messages(messages)[-16:]
+    latest = normalize_text(next((message["content"] for message in reversed(messages) if message["role"] == "user"), ""))
+    if re.search(r"humano|atendente|falar com (?:uma? )?pessoa|reclamacao", latest):
+        return _handoff(messages, session_id, channel)
+    if guided := availability_answer(messages):
+        suffix = " Envie /agendar para escolher e confirmar." if channel == "telegram" else " Use Agendar para escolher e confirmar."
+        guided["content"] += suffix if guided["slots"] else ""
+        return guided
+    fallback = basic_answer(messages)
+    if not OPENAI_API_KEY:
+        return {"content": fallback or "O atendimento com IA está indisponível. Posso consultar serviços, preços e vagas. Use Agendar para reservar ou peça atendimento da equipe.",
+                "intent": "servicos_precos" if fallback else "fora_escopo", "confidence": 1.0 if fallback else 0.0,
+                "tools_called": ["consulta_guiada"] if fallback else [], "outcome": "answered" if fallback else "unavailable", "mode": "guided"}
+    try:
+        context = "\n".join(f"{message['role']}: {message['content']}" for message in messages[-8:])
+        classification = classify_intent(context)
+        if classification.confidence < 0.55 or classification.intent == "atendimento_humano":
+            return _handoff(messages, session_id, channel)
+        agent = build_agent(channel, session_id)
+        current = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d/%m/%Y %H:%M")
+        result = agent.invoke({"messages": [{"role": "system", "content": f"Data e hora atuais: {current}. A intenção classificada da última mensagem é {classification.intent}. Considere o contexto, pergunte apenas o que faltar e ofereça até três opções reais. Para falta de vagas, consulte alternativas de dia e profissional e explique o que mudou."}, *messages]})
+        last = result["messages"][-1]
+        tools_called = [call.get("name", "") for message in result["messages"] for call in getattr(message, "tool_calls", [])]
+        if "solicitar_atendimento_humano" in tools_called:
+            return _handoff(messages, session_id, channel)
+        return {"content": last.content if isinstance(last.content, str) else str(last.content), "intent": classification.intent,
+                "confidence": classification.confidence, "tools_called": tools_called, "outcome": "answered", "mode": "ai"}
+    except Exception:
+        return {"content": fallback or "Não consegui consultar a IA agora. Posso ajudar com serviços e vagas, ou encaminhar seu pedido à equipe.",
+                "intent": "fora_escopo", "confidence": 0.0, "tools_called": [], "outcome": "unavailable", "mode": "fallback"}

@@ -1,11 +1,12 @@
 @echo off
 setlocal
 set "PROJECT_DIR=%~dp0"
-set "PYTHON=%PROJECT_DIR%.venv312\Scripts\python.exe"
+set "PYTHON=%PROJECT_DIR%.venv\Scripts\python.exe"
+if not exist "%PYTHON%" set "PYTHON=%PROJECT_DIR%.venv312\Scripts\python.exe"
 
 if not exist "%PYTHON%" (
   echo Python do ambiente do projeto nao foi encontrado.
-  echo Confira se a pasta .venv312 existe dentro do projeto.
+  echo Crie o ambiente .venv seguindo as instrucoes do README.
   pause
   exit /b 1
 )

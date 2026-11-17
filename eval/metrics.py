@@ -1,9 +1,10 @@
 """Calcula métricas a partir de CSVs preenchidos após a avaliação."""
 import argparse
 import csv
+import math
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
+from statistics import median
 
 
 def read_csv(path: str) -> list[dict]:
@@ -34,19 +35,59 @@ def intent_metrics(rows: list[dict]) -> dict:
 
 
 def fcr_metrics(rows: list[dict]) -> dict:
-    eligible = [r for r in rows if r.get("expected_task_achieved") in ("0", "1")]
-    solved = [r for r in eligible if r["expected_task_achieved"] == "1" and r.get("escalated", "0") == "0" and r.get("repeated_question", "0") == "0"]
+    # Only complete human consensus labels establish resolution; an answer is not proof.
+    fields = ("expected_task_achieved", "escalated", "repeated_question")
+    eligible = [r for r in rows if all(r.get(field) in ("0", "1") for field in fields)]
+    solved = [r for r in eligible if r["expected_task_achieved"] == "1" and r["escalated"] == "0" and r["repeated_question"] == "0"]
     return {"scenarios": len(eligible), "resolved_first_contact": len(solved), "fcr": len(solved) / len(eligible) if eligible else None}
 
 
 def response_metrics(rows: list[dict]) -> dict:
-    values = [float(r["response_ms"]) for r in rows if r.get("response_ms", "").strip()]
-    return {"n": len(values), "mean_ms": sum(values) / len(values) if values else None}
+    values = []
+    for row in rows:
+        if row.get("outcome") == "booking_confirmed":
+            continue
+        try:
+            value = float(row.get("response_ms", ""))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            values.append(value)
+    values.sort()
+    return {
+        "n": len(values),
+        "mean_ms": sum(values) / len(values) if values else None,
+        "median_ms": median(values) if values else None,
+        "p95_ms": values[math.ceil(0.95 * len(values)) - 1] if values else None,
+    }
+
+
+def automation_metrics(rows: list[dict]) -> dict:
+    """Operational counts; booking events must already be deduplicated by exporter."""
+    interactions = [row for row in rows if row.get("outcome") != "booking_confirmed"]
+    bookings = [row for row in rows if row.get("outcome") == "booking_confirmed"]
+    outcomes = Counter(row.get("outcome") or "unknown" for row in interactions)
+    channels = Counter(row.get("channel") or "unknown" for row in interactions)
+    sessions = {row["session_id"] for row in interactions if row.get("session_id")}
+    escalated_sessions = {row["session_id"] for row in interactions if row.get("outcome") == "escalated" and row.get("session_id")}
+    booked_sessions = {row["session_id"] for row in bookings if row.get("session_id")}
+    return {
+        "interactions": len(interactions), "sessions": len(sessions),
+        "escalations": outcomes["escalated"],
+        "escalation_rate": outcomes["escalated"] / len(interactions) if interactions else None,
+        "escalated_sessions": len(escalated_sessions),
+        "session_escalation_rate": len(escalated_sessions) / len(sessions) if sessions else None,
+        "completed_bookings": len(bookings), "booked_sessions": len(booked_sessions),
+        "unavailable": outcomes["unavailable"], "errors": outcomes["error"],
+        "outcomes": dict(outcomes), "channels": dict(channels),
+    }
 
 
 def session_duration_metrics(rows: list[dict]) -> dict:
     sessions: dict[str, list[datetime]] = {}
     for row in rows:
+        if row.get("outcome") == "booking_confirmed":
+            continue
         session_id, timestamp = row.get("session_id", ""), row.get("created_at", "")
         if session_id and timestamp:
             try:
@@ -67,6 +108,7 @@ def main():
     parser.add_argument("--intents", help="CSV com true_intent e predicted_intent")
     parser.add_argument("--fcr", help="CSV de cenários FCR preenchido por avaliadores")
     parser.add_argument("--latency", help="CSV com response_ms")
+    parser.add_argument("--operations", help="CSV exportado com outcomes, canais e reservas concluídas")
     parser.add_argument("--likert", help="CSV anônimo com rating de 1 a 5")
     args = parser.parse_args()
     if args.intents: print("Intenções:", intent_metrics(read_csv(args.intents)))
@@ -76,6 +118,7 @@ def main():
         print("Latência por resposta:", response_metrics(rows))
         print("Duração de sessão:", session_duration_metrics(rows))
     if args.likert: print("Likert:", likert_metrics(read_csv(args.likert)))
+    if args.operations: print("Automação:", automation_metrics(read_csv(args.operations)))
 
 
 if __name__ == "__main__":

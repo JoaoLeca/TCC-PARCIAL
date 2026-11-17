@@ -4,7 +4,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 from time import perf_counter
-import re
 from typing import Literal
 from barber_bot.db import initialize_database, connect
 from barber_bot.schedule import (
@@ -15,6 +14,9 @@ from barber_bot.assistant import run_agent
 from barber_bot.config import OPENAI_API_KEY
 from barber_bot.operations import shop_profile
 from barber_bot.staff_api import router as staff_router
+from barber_bot.conversation import sanitize_chat_messages
+from barber_bot.support import SupportError, create_support_request, get_customer_request, update_support_contact
+from barber_bot.telemetry import record_booking, record_handoff, record_interaction
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,16 +37,18 @@ class BookingIn(BaseModel):
     confirmed: bool = False
     expected_price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     expected_duration: int | None = Field(default=None, gt=0)
+    request_key: str | None = Field(default=None, min_length=16, max_length=128)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=4000)
 
 
 class ChatIn(BaseModel):
-    session_id: str
-    messages: list[ChatMessage]
+    session_id: str = Field(min_length=1, max_length=128)
+    messages: list[ChatMessage] = Field(min_length=1, max_length=100)
 
 
 @app.get("/health")
@@ -92,9 +96,12 @@ def booking_error(_request: Request, exc: BookingError):
 
 @app.post("/appointments", dependencies=[Depends(no_store)])
 def book(payload: BookingIn):
-    return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
-                              payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
-                              expected_duration=payload.expected_duration)
+    booking = create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
+                                 payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
+                                 expected_duration=payload.expected_duration,
+                                 request_key=f"web:{payload.request_key}" if payload.request_key else None)
+    record_booking(payload.session_id or f"booking:{booking['id']}", booking["id"])
+    return booking
 
 
 class CustomerAccessIn(BaseModel):
@@ -138,22 +145,74 @@ def reschedule(appointment_id: int, payload: RescheduleIn):
                                   access_code=payload.access_code.get_secret_value())
 
 
-@app.post("/chat")
+class SupportIn(BaseModel):
+    session_id: str = Field(min_length=16, max_length=128)
+    reason: str = Field(default="Cliente solicitou atendimento humano.", max_length=500)
+    customer_name: str = Field(default="", max_length=120)
+    customer_phone: str = Field(default="", max_length=30)
+
+
+class SupportContactIn(SupportIn):
+    ticket_id: int = Field(gt=0)
+    customer_name: str = Field(min_length=1, max_length=120)
+    customer_phone: str = Field(min_length=10, max_length=30)
+
+
+class SupportStatusIn(BaseModel):
+    session_id: str = Field(min_length=16, max_length=128)
+    ticket_id: int | None = Field(default=None, gt=0)
+
+
+@app.middleware("http")
+async def private_support_status(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/support/status":
+        no_store(response)
+    return response
+
+
+@app.exception_handler(SupportError)
+def support_error(_request: Request, exc: SupportError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/support/requests", dependencies=[Depends(no_store)])
+def request_human(payload: SupportIn):
+    if {"customer_name", "customer_phone"} & payload.model_fields_set:
+        if not payload.customer_name.strip() or not payload.customer_phone.strip():
+            raise SupportError("Informe seu nome e telefone com DDD para solicitar atendimento.", 422)
+    request = create_support_request(payload.session_id, "web", payload.reason, payload.customer_name, payload.customer_phone)
+    record_handoff(payload.session_id, request["id"])
+    return {"id": request["id"], "status": request["status"]}
+
+
+@app.post("/support/contact", dependencies=[Depends(no_store)])
+def support_contact(payload: SupportContactIn):
+    request = update_support_contact(payload.session_id, "web", payload.ticket_id, payload.customer_name, payload.customer_phone)
+    return {"id": request["id"], "status": request["status"]}
+
+
+@app.post("/support/status", dependencies=[Depends(no_store)])
+def support_status(payload: SupportStatusIn):
+    return {"request": get_customer_request(payload.session_id, "web", payload.ticket_id)}
+
+
+@app.post("/chat", dependencies=[Depends(no_store)])
 def chat(payload: ChatIn):
     started = perf_counter()
-    if not OPENAI_API_KEY:
-        raise HTTPException(503, "O chat com GPT está desativado. Configure OPENAI_API_KEY no arquivo .env.")
+    messages = sanitize_chat_messages([message.model_dump() for message in payload.messages])
     try:
-        messages = [
-            {"role": message.role, "content": re.sub(r"BI-[A-Za-z0-9_-]{24}", "[código privado]", message.content)}
-            for message in payload.messages
-        ]
-        result = run_agent(messages)
+        result = run_agent(messages, session_id=payload.session_id)
         elapsed = round((perf_counter() - started) * 1000)
-        user_message = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        with connect() as conn:
-            conn.execute("INSERT INTO interaction_logs(session_id,user_message,intent,tools_called,outcome,latency_ms) VALUES (?,?,?,?,?,?)", (payload.session_id, user_message, result["intent"], ",".join(result["tools_called"]), "escalated" if result["intent"] == "atendimento_humano" else "answered", elapsed))
-        return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"], "latency_ms": elapsed}
-    except Exception as exc:
-        raise HTTPException(502, f"Falha ao consultar o assistente GPT: {exc}")
+        record_interaction(payload.session_id, messages, result, elapsed)
+        options = None
+        if result.get("mode") == "guided" and result.get("service") and result.get("slots"):
+            options = {"service": result["service"], "slots": result["slots"][:3]}
+        return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"],
+                "latency_ms": elapsed, "mode": result.get("mode", "ai"), "support_request": result.get("support_request"),
+                "booking_options": options}
+    except SupportError:
+        raise
+    except Exception:
+        raise HTTPException(503, "Não foi possível acessar o atendimento agora. Tente novamente ou use Agendar.")
 
