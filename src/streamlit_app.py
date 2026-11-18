@@ -722,7 +722,7 @@ except requests.RequestException:
 
 shop = catalog["shop"] if catalog else None
 shop_name = shop["name"] if shop else "Barbearia Imperial"
-st.set_page_config(page_title=shop_name, page_icon="💈", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title=shop_name, page_icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", layout="centered", initial_sidebar_state="collapsed")
 st.html("""
 <style>
   .st-key-booking_calendar [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {

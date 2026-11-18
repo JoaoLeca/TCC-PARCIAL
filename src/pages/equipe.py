@@ -478,7 +478,7 @@ def edit_information():
 
 
 def main():
-    st.set_page_config(page_title="Equipe · Barbearia Imperial", page_icon="💈", layout="wide", initial_sidebar_state="collapsed")
+    st.set_page_config(page_title="Equipe · Barbearia Imperial", page_icon="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", layout="wide", initial_sidebar_state="collapsed")
     if st.button("← Voltar para a barbearia"):
         st.switch_page("streamlit_app.py")
     if message := st.session_state.pop("staff_message", None):
