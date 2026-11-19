@@ -4,7 +4,7 @@ O pedido aprovado é implementar as melhorias de confiabilidade do Telegram, ent
 
 ## Decisões de implementação
 
-Usar o site e o Telegram existentes, com as mesmas regras de agenda no Python e SQLite. Consultas e encaminhamento humano devem funcionar mesmo quando a IA estiver indisponível. O GPT pode interpretar e consultar informações atuais, enquanto a reserva continua exigindo seleção e confirmação explícita. Alterações de reservas exigem telefone e código privado.
+Usar o site e o Telegram existentes, com as mesmas regras de agenda no Python e SQLite. Consultas e encaminhamento humano devem funcionar mesmo quando a IA estiver indisponível. O GPT pode interpretar e consultar informações atuais, enquanto a reserva continua exigindo seleção e confirmação explícita. Desde 18/11/2026, alterações de novas reservas exigem vínculo com a sessão do site ou conversa privada do Telegram e confirmação explícita. As telas e os comprovantes exibem o protocolo da reserva; a referência de quatro dígitos foi removida por decisão do usuário. Para outro aparelho/canal, a recuperação automática usa o próprio contato confirmado do Telegram e um código temporário no site, sem exigir atendimento da equipe.
 
 Contato para retorno será coletado fora do contexto do modelo. A equipe terá uma fila privada com responsável e estados Aberto, Em atendimento e Resolvido. O dono verá todos os chamados, e cada barbeiro poderá assumir um chamado livre e gerenciar os seus. FCR e acerto das intenções dependem de avaliação humana ou rótulos de referência. As métricas operacionais serão calculadas a partir de eventos reais, sem simular resultados de pesquisa.
 

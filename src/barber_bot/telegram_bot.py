@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from barber_bot.assistant import run_agent
+from barber_bot.booking_conversation import handle_booking_message
 from barber_bot.config import (
     MAX_BOOKING_DAYS,
     MIN_BOOKING_DAYS,
@@ -22,6 +23,7 @@ from barber_bot.config import (
 )
 from barber_bot.db import connect, initialize_database
 from barber_bot.conversation import sanitize_chat_messages
+from barber_bot.customer_access import identification_code, public_appointment, require_owned_booking
 from barber_bot.presentation import format_price
 from barber_bot.schedule import (
     BookingError,
@@ -31,10 +33,10 @@ from barber_bot.schedule import (
     get_booking_request,
     list_barbers,
     list_services,
-    replace_access_code,
 )
 from barber_bot.telemetry import record_booking, record_handoff, record_interaction
 from barber_bot.support import SupportError, create_support_request, get_customer_request, update_support_contact
+from barber_bot.customer_recovery import RecoveryError, issue_telegram_code, verify_telegram_contact
 
 log = logging.getLogger("barber_bot.telegram")
 API_ROOT = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN
@@ -124,6 +126,11 @@ def _receipt_fields(state: dict[str, Any]) -> dict[str, Any]:
     return {key: state[key] for key in ("appointment_id", "receipt_pending") if key in state}
 
 
+def _discard_management_proposal(chat_id: str) -> None:
+    # A later yes must never confirm a proposal abandoned for another flow.
+    handle_booking_message([{"role": "user", "content": "não"}], "telegram", chat_id)
+
+
 def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": text, "callback_data": data} for text, data in row] for row in rows]}
 
@@ -181,6 +188,7 @@ def _send_dates(chat_id: str, state: dict[str, Any]) -> None:
 
 
 def _start_flow(chat_id: str, mode: str) -> None:
+    _discard_management_proposal(chat_id)
     state = {"mode": mode, "step": "service", "history": [], "request_key": token_hex(16),
              **_receipt_fields(_load_state(chat_id))}
     _save_state(chat_id, state)
@@ -260,6 +268,7 @@ def _phone_keyboard() -> dict[str, Any]:
 
 
 def _begin_support(chat_id: str, state: dict[str, Any], ticket: dict[str, Any] | None = None) -> None:
+    _discard_management_proposal(chat_id)
     if ticket is None:
         ticket = create_support_request(f"telegram:{chat_id}", "telegram", "Cliente solicitou atendimento humano no Telegram.")
         record_handoff(f"telegram:{chat_id}", ticket["id"], channel="telegram")
@@ -304,6 +313,7 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
             state["barber_id"], state["starts_at"], True,
             expected_price=state["expected_price"], expected_duration=state["expected_duration"],
             request_key=f"telegram:{chat_id}:{state['request_key']}",
+            owner_channel="telegram", owner_key=chat_id,
         )
     except BookingError as exc:
         send_message(chat_id, f"Não consegui concluir: {exc}\nVamos consultar os horários novamente.")
@@ -314,40 +324,52 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
     completed = {"step": "completed", "appointment_id": booking["id"],
                  "receipt_pending": True, "callback_token": state["callback_token"]}
     _save_state(chat_id, completed)
-    _deliver_receipt(chat_id, completed, booking)
+    _deliver_receipt(chat_id, completed)
 
 
-def _deliver_receipt(chat_id: str, state: dict[str, Any], booking: dict[str, Any] | None = None) -> None:
+def _deliver_receipt(chat_id: str, state: dict[str, Any]) -> None:
+    # Re-read committed data even on the first delivery. An owned booking must
+    # belong to this trusted chat; the persisted session ID alone is insufficient.
+    with connect() as conn:
+        row = conn.execute("""
+            SELECT a.*,b.name AS barber,s.name AS service,
+                   COALESCE(a.price_at_booking,s.price) AS price
+            FROM appointments a JOIN barbers b ON b.id=a.barber_id
+            JOIN services s ON s.id=a.service_id WHERE a.id=?
+        """, (state["appointment_id"],)).fetchone()
+        if row is not None:
+            owned = conn.execute("SELECT 1 FROM booking_owners WHERE appointment_id=?",
+                                 (row["id"],)).fetchone()
+            if owned:
+                try:
+                    booking = require_owned_booking(row["id"], "telegram", chat_id, conn=conn)
+                except BookingError:
+                    booking = None
+            else:
+                # Ownerless historical receipts may be recovered only through
+                # this private chat's already persisted successful booking.
+                booking = dict(row)
+                booking["identification_code"] = identification_code(row["customer_phone"])
+        else:
+            booking = None
     if booking is None:
-        # The ID comes only from this private chat's persisted successful booking.
-        with connect() as conn:
-            row = conn.execute("""
-                SELECT a.id,a.status,a.starts_at,b.name AS barber,s.name AS service,
-                       COALESCE(a.price_at_booking,s.price) AS price
-                FROM appointments a JOIN barbers b ON b.id=a.barber_id
-                JOIN services s ON s.id=a.service_id WHERE a.id=?
-            """, (state["appointment_id"],)).fetchone()
-        if not row:
-            send_message(chat_id, "Não encontrei o comprovante. Fale com a equipe da barbearia.")
-            return
-        booking = dict(row)
+        send_message(chat_id, "Não encontrei o comprovante desta conversa. Fale com a equipe da barbearia.")
+        return
+    booking = public_appointment(booking)
     state["receipt_pending"] = True
     _save_state(chat_id, state)
     # Reconcile the event on every delivery attempt, including a retry after a
     # failure between the booking commit and telemetry commit. This is idempotent.
     record_booking(f"telegram:{chat_id}", booking["id"], channel="telegram")
-    if "access_code" not in booking:
-        booking["access_code"] = replace_access_code(booking["id"], None)
     start = datetime.fromisoformat(booking["starts_at"]).astimezone(TZ)
     heading = "Agendamento cancelado." if booking.get("status") == "cancelled" else "✅ Agendamento confirmado!"
     send_message(
         chat_id,
-        f"{heading}\n"
+        f"{heading}\n\n"
         f"Protocolo: #{booking['id']}\n"
         f"{booking['service']} com {booking['barber']}\n"
         f"{start:%d/%m/%Y às %H:%M} · {format_price(booking['price'])}\n\n"
-        f"Código privado para consultar ou alterar pelo site: {booking['access_code']}\n"
-        "Guarde esse código e não o compartilhe. Vale o código do comprovante mais recente. "
+        "Para remarcar ou cancelar, escreva seu pedido nesta conversa.\n"
         "Para reenviar o comprovante, use /comprovante. Para iniciar outra reserva, envie /agendar.",
         _main_keyboard(),
     )
@@ -378,6 +400,7 @@ def _handle_callback(callback: dict[str, Any]) -> None:
 
 
 def _dispatch_callback(chat_id: str, state: dict[str, Any], data: str) -> None:
+    _discard_management_proposal(chat_id)
     if state.get("step") == "completed":
         if data == "confirm":
             if state.get("receipt_pending"):
@@ -474,6 +497,34 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
                          "Use /atendimento para consultar novamente.")
         return
     state = _load_state(chat_id)
+    if command == "/start" and re.fullmatch(r"/start(?:@\w+)? recover_[A-Za-z0-9_-]{32}", raw_text):
+        _discard_management_proposal(chat_id)
+        _save_state(chat_id, {"step": "verify_reservations", "recovery_nonce": raw_text.split("recover_", 1)[1], **_receipt_fields(state)})
+        send_message(chat_id, "Para receber o código solicitado no site, confirme seu próprio telefone pelo botão Compartilhar meu telefone. Não digite o número. Depois volte ao site e informe o código.", _phone_keyboard())
+        return
+    if command == "/verificar":
+        _discard_management_proposal(chat_id)
+        _save_state(chat_id, {"step": "verify_reservations", "requested_action": "meus agendamentos", **_receipt_fields(state)})
+        send_message(chat_id, "Vamos localizar suas reservas. Confirme seu próprio contato em Compartilhar meu telefone. Nenhuma reserva será alterada nesta etapa.", _phone_keyboard())
+        return
+    if state.get("step") == "verify_reservations" and not command:
+        if not contact:
+            send_message(chat_id, "Para proteger sua reserva, confirme pelo botão Compartilhar meu telefone do Telegram. Um número digitado não confirma sua identidade. Para sair, use /cancelar.", _phone_keyboard())
+            return
+        try:
+            if state.get("recovery_nonce"):
+                code = issue_telegram_code(state["recovery_nonce"], chat_id, sender_id, contact)
+                send_message(chat_id, f"Seu código de verificação para o site:\n\n{code}\n\nVálido por 5 minutos. Digite somente no site da barbearia que abriu esta verificação. Se você não solicitou este acesso, não compartilhe o código.", {"remove_keyboard": True})
+                _clear_state(chat_id)
+            else:
+                verify_telegram_contact(chat_id, sender_id, contact)
+                result = handle_booking_message([{"role": "user", "content": state.get("requested_action", "meus agendamentos")}], "telegram", chat_id)
+                _clear_state(chat_id)
+                content = result["content"] if result and not result.get("needs_verification") else "Não encontrei reservas ativas para o telefone confirmado. Você pode fazer um novo agendamento."
+                send_message(chat_id, "Telefone confirmado.\n\n"+content, {"remove_keyboard": True})
+        except RecoveryError as exc:
+            send_message(chat_id, str(exc), _phone_keyboard())
+        return
     if command == "/comprovante":
         if state.get("appointment_id"):
             _deliver_receipt(chat_id, state)
@@ -484,6 +535,7 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         _deliver_receipt(chat_id, state)
 
     if command in {"/start", "/help"}:
+        _discard_management_proposal(chat_id)
         _clear_state(chat_id)
         send_message(
             chat_id,
@@ -494,7 +546,10 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
             _main_keyboard(),
         )
         return
-    if command in {"/cancelar", "/cancel"} or raw_text.casefold() == "cancelar":
+    if command in {"/cancelar", "/cancel"} or (
+        raw_text.casefold() == "cancelar" and state.get("step") in {"name", "phone", "support_name", "support_phone"}
+    ):
+        _discard_management_proposal(chat_id)
         _clear_state(chat_id)
         send_message(chat_id, "Tudo bem, interrompi o fluxo. Envie /agendar ou /horarios quando quiser.", _main_keyboard())
         return
@@ -509,6 +564,25 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         return
 
     step = state.get("step")
+    if step not in {"name", "phone", "support_name", "support_phone"} and raw_text:
+        if len(raw_text) > MAX_CHAT_LENGTH:
+            send_message(chat_id, "A mensagem ficou longa demais. Envie uma pergunta mais curta.")
+            return
+        management_messages = sanitize_chat_messages([{"role": "user", "content": raw_text}])
+        started = time.monotonic()
+        management = handle_booking_message(management_messages, "telegram", chat_id)
+        if management is not None:
+            if management.get("needs_verification"):
+                _save_state(chat_id, {"step": "verify_reservations", "requested_action": management_messages[-1]["content"], **_receipt_fields(state)})
+                send_message(chat_id, "Posso localizar sua reserva pelo telefone confirmado do Telegram, sem precisar da equipe. Toque em Compartilhar meu telefone para confirmar seu próprio contato. Depois continuo seu pedido, com confirmação antes de alterar a reserva.", _phone_keyboard())
+                return
+            answer = sanitize_chat_messages([{"role": "assistant", "content": str(management["content"])}])[0]["content"]
+            record_interaction(f"telegram:{chat_id}", management_messages,
+                               {**management, "content": answer},
+                               int((time.monotonic() - started) * 1000), channel="telegram")
+            send_message(chat_id, answer)
+            return
+
     if step in {"name", "support_name"}:
         name = raw_text
         if not name and contact:

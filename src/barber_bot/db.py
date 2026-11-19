@@ -64,6 +64,37 @@ def initialize_database(path: str | Path | None = None) -> None:
             appointment_id INTEGER PRIMARY KEY REFERENCES appointments(id) ON DELETE CASCADE,
             code_hash TEXT NOT NULL UNIQUE
         );
+        CREATE TABLE IF NOT EXISTS booking_owners (
+            appointment_id INTEGER PRIMARY KEY REFERENCES appointments(id) ON DELETE CASCADE,
+            channel TEXT NOT NULL CHECK(channel IN ('web', 'telegram')),
+            owner_hash TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_booking_owners ON booking_owners(channel, owner_hash);
+        CREATE TABLE IF NOT EXISTS booking_access_grants (
+            appointment_id INTEGER NOT NULL REFERENCES appointments(id) ON DELETE CASCADE,
+            channel TEXT NOT NULL CHECK(channel IN ('web','telegram')),
+            owner_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+            PRIMARY KEY(appointment_id,channel,owner_hash)
+        );
+        CREATE TABLE IF NOT EXISTS customer_recovery (
+            challenge_hash TEXT PRIMARY KEY, owner_hash TEXT NOT NULL, phone TEXT NOT NULL,
+            created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            code_hash TEXT, code_expires_at INTEGER, telegram_chat_id TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0, consumed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_customer_recovery_owner ON customer_recovery(owner_hash,created_at);
+        CREATE INDEX IF NOT EXISTS idx_customer_recovery_phone ON customer_recovery(phone,created_at);
+        CREATE TABLE IF NOT EXISTS customer_recovery_flows (
+            owner_hash TEXT PRIMARY KEY, stage TEXT NOT NULL, challenge_id TEXT,
+            requested_action TEXT NOT NULL DEFAULT '', expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS booking_conversations (
+            channel TEXT NOT NULL CHECK(channel IN ('web', 'telegram')),
+            owner_key_hash TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(channel, owner_key_hash)
+        );
         CREATE TABLE IF NOT EXISTS staff_accounts (
             username TEXT PRIMARY KEY,
             password_hash BLOB NOT NULL,

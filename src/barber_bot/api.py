@@ -17,6 +17,9 @@ from barber_bot.staff_api import router as staff_router
 from barber_bot.conversation import sanitize_chat_messages
 from barber_bot.support import SupportError, create_support_request, get_customer_request, update_support_contact
 from barber_bot.telemetry import record_booking, record_handoff, record_interaction
+from barber_bot.customer_access import list_owned_bookings, require_owned_booking, public_appointment
+from barber_bot.booking_conversation import handle_booking_message
+from barber_bot.customer_recovery import RecoveryError, start_recovery, verify_recovery, begin_chat_recovery, handle_chat_recovery
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,6 +32,7 @@ app.include_router(staff_router)
 
 
 class BookingIn(BaseModel):
+    customer_token: SecretStr | None = Field(default=None, min_length=32, max_length=128)
     customer_name: str = Field(min_length=1, max_length=120)
     customer_phone: str = Field(min_length=8, max_length=30)
     service_id: int
@@ -47,6 +51,8 @@ class ChatMessage(BaseModel):
 
 
 class ChatIn(BaseModel):
+    recovery_input: SecretStr | None = Field(default=None, max_length=4000)
+    customer_token: SecretStr | None = Field(default=None, min_length=32, max_length=128)
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[ChatMessage] = Field(min_length=1, max_length=100)
 
@@ -99,9 +105,92 @@ def book(payload: BookingIn):
     booking = create_appointment(payload.customer_name, payload.customer_phone, payload.service_id, payload.barber_id,
                                  payload.starts_at, payload.confirmed, expected_price=payload.expected_price,
                                  expected_duration=payload.expected_duration,
-                                 request_key=f"web:{payload.request_key}" if payload.request_key else None)
+                                 request_key=f"web:{payload.request_key}" if payload.request_key else None,
+                                 owner_channel="web" if payload.customer_token else None,
+                                 owner_key=payload.customer_token.get_secret_value() if payload.customer_token else None)
     record_booking(payload.session_id or f"booking:{booking['id']}", booking["id"])
-    return booking
+    return public_appointment(booking)
+
+
+class OwnedAccessIn(BaseModel):
+    customer_token: SecretStr = Field(min_length=32, max_length=128)
+
+
+class OwnedChangeIn(OwnedAccessIn):
+    confirmed: bool = False
+    expected_starts_at: str
+
+
+class RecoveryIn(OwnedAccessIn):
+    phone: str = Field(min_length=8, max_length=30)
+
+
+class RecoveryVerifyIn(OwnedAccessIn):
+    challenge_id: SecretStr = Field(min_length=32, max_length=64)
+    code: SecretStr = Field(min_length=1, max_length=30)
+
+
+@app.exception_handler(RecoveryError)
+def recovery_error(_request: Request, exc: RecoveryError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)}, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/customer/recovery", dependencies=[Depends(no_store)])
+def request_recovery(payload: RecoveryIn):
+    return start_recovery(payload.phone, payload.customer_token.get_secret_value())
+
+
+@app.post("/customer/recovery/verify", dependencies=[Depends(no_store)])
+def confirm_recovery(payload: RecoveryVerifyIn):
+    verify_recovery(payload.challenge_id.get_secret_value(), payload.code.get_secret_value(), payload.customer_token.get_secret_value())
+    return owned_appointments(payload)
+
+
+class OwnedOptionsIn(OwnedAccessIn):
+    appointment_date: date
+
+
+class OwnedRescheduleIn(OwnedChangeIn):
+    new_starts_at: str
+
+
+@app.post("/customer/appointments", dependencies=[Depends(no_store)])
+def owned_appointments(payload: OwnedAccessIn):
+    return [public_appointment(row) for row in list_owned_bookings("web", payload.customer_token.get_secret_value())]
+
+
+@app.post("/customer/appointments/{appointment_id}", dependencies=[Depends(no_store)])
+def owned_appointment(appointment_id: int, payload: OwnedAccessIn):
+    return public_appointment(require_owned_booking(appointment_id, "web", payload.customer_token.get_secret_value()))
+
+
+@app.post("/customer/appointments/{appointment_id}/reschedule-options", dependencies=[Depends(no_store)])
+def owned_options(appointment_id: int, payload: OwnedOptionsIn):
+    record = require_owned_booking(appointment_id, "web", payload.customer_token.get_secret_value())
+    return reschedule_options(appointment_id, record["customer_phone"], payload.appointment_date)
+
+
+def change_owned_appointment(appointment_id, payload, *, new_start=None):
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        record = require_owned_booking(appointment_id, "web", payload.customer_token.get_secret_value(), conn=conn)
+        if record["starts_at"] != payload.expected_starts_at:
+            raise BookingError("A reserva foi alterada. Consulte os dados atualizados antes de confirmar novamente.")
+        if new_start is None:
+            cancel_appointment(appointment_id, record["customer_phone"], payload.confirmed, conn=conn)
+        else:
+            reschedule_appointment(appointment_id, record["customer_phone"], new_start, payload.confirmed, conn=conn)
+        return public_appointment(require_owned_booking(appointment_id, "web", payload.customer_token.get_secret_value(), conn=conn))
+
+
+@app.post("/customer/appointments/{appointment_id}/cancel", dependencies=[Depends(no_store)])
+def owned_cancel(appointment_id: int, payload: OwnedChangeIn):
+    return change_owned_appointment(appointment_id, payload)
+
+
+@app.post("/customer/appointments/{appointment_id}/reschedule", dependencies=[Depends(no_store)])
+def owned_reschedule(appointment_id: int, payload: OwnedRescheduleIn):
+    return change_owned_appointment(appointment_id, payload, new_start=payload.new_starts_at)
 
 
 class CustomerAccessIn(BaseModel):
@@ -202,7 +291,16 @@ def chat(payload: ChatIn):
     started = perf_counter()
     messages = sanitize_chat_messages([message.model_dump() for message in payload.messages])
     try:
-        result = run_agent(messages, session_id=payload.session_id)
+        owner_key = payload.customer_token.get_secret_value() if payload.customer_token else None
+        latest = next((message.content for message in reversed(payload.messages) if message.role == "user"), "")
+        value = payload.recovery_input.get_secret_value() if payload.recovery_input else latest
+        result = handle_chat_recovery(value, owner_key)
+        if result is None:
+            result = handle_booking_message(messages, "web", owner_key)
+            if result and result.get("needs_verification") and owner_key:
+                result = begin_chat_recovery(owner_key, messages[-1]["content"])
+        if result is None:
+            result = run_agent(messages, session_id=payload.session_id)
         elapsed = round((perf_counter() - started) * 1000)
         record_interaction(payload.session_id, messages, result, elapsed)
         options = None
@@ -210,7 +308,7 @@ def chat(payload: ChatIn):
             options = {"service": result["service"], "slots": result["slots"][:3]}
         return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"],
                 "latency_ms": elapsed, "mode": result.get("mode", "ai"), "support_request": result.get("support_request"),
-                "booking_options": options}
+                "booking_options": options, "outcome": result.get("outcome"), "recovery_stage": result.get("recovery_stage")}
     except SupportError:
         raise
     except Exception:

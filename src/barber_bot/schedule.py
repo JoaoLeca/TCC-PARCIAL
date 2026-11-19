@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -16,6 +17,17 @@ class BookingError(ValueError):
 
 class BookingAccessError(BookingError):
     pass
+
+
+@contextmanager
+def _mutation_connection(path, conn):
+    """Join a caller's transaction or own an immediate write transaction."""
+    if conn is not None:
+        yield conn
+    else:
+        with connect(path) as transaction:
+            transaction.execute("BEGIN IMMEDIATE")
+            yield transaction
 
 
 def _access_digest(code):
@@ -55,7 +67,8 @@ def get_customer_appointment(phone, code):
 def replace_access_code(appointment_id, barber_id):
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        if not conn.execute("SELECT 1 FROM appointments WHERE id=? AND (? IS NULL OR barber_id=?)",
+        if not conn.execute("""SELECT 1 FROM appointments a JOIN appointment_access c ON c.appointment_id=a.id
+                            WHERE a.id=? AND (? IS NULL OR a.barber_id=?)""",
                             (appointment_id, barber_id, barber_id)).fetchone():
             return None
         return _issue_access_code(conn, appointment_id)
@@ -169,29 +182,39 @@ def get_booking_request(request_key: str, path: str | Path | None = None) -> int
     return row["appointment_id"] if row else None
 
 
-def create_appointment(customer_name: str, customer_phone: str, service_id: int, barber_id: int, starts_at: str, confirmed: bool, path: str | Path | None = None, *, days_range: bool = True, expected_price: float | None = None, expected_duration: int | None = None, request_key: str | None = None) -> dict:
+def create_appointment(customer_name: str, customer_phone: str, service_id: int, barber_id: int, starts_at: str, confirmed: bool, path: str | Path | None = None, *, days_range: bool = True, expected_price: float | None = None, expected_duration: int | None = None, request_key: str | None = None, owner_channel: str | None = None, owner_key: str | None = None) -> dict:
+    from barber_bot.customer_access import identification_code, owner_digest
+
     if not confirmed:
         raise BookingError("Peça confirmação explícita da pessoa antes de gravar o agendamento.")
     name, phone = customer_name.strip(), customer_phone.strip()
     if not name or not phone:
         raise BookingError("Nome e telefone são necessários para concluir o agendamento.")
+    owner_hash = owner_digest(owner_channel, owner_key) if owner_channel is not None or owner_key is not None else None
     start = _parse_start(starts_at)
-    payload_hash = _access_digest(json.dumps([name, phone_key(phone), service_id, barber_id, start.isoformat(),
-                                            expected_price, expected_duration], ensure_ascii=False))
+    payload = [name, phone_key(phone), service_id, barber_id, start.isoformat(), expected_price, expected_duration]
+    # Preserve old unowned request fingerprints, but never let their replay claim ownership.
+    if owner_hash is not None:
+        payload.extend([owner_channel, owner_hash])
+    payload_hash = _access_digest(json.dumps(payload, ensure_ascii=False))
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if request_key:
             previous = conn.execute("SELECT * FROM booking_requests WHERE request_hash=?",
                                     (_access_digest(request_key),)).fetchone()
             if previous:
-                if previous["payload_hash"] != payload_hash:
+                previous_owner = conn.execute("SELECT channel, owner_hash FROM booking_owners WHERE appointment_id=?",
+                                              (previous["appointment_id"],)).fetchone()
+                expected_owner = (owner_channel, owner_hash) if owner_hash is not None else None
+                saved_owner = (previous_owner["channel"], previous_owner["owner_hash"]) if previous_owner else None
+                if previous["payload_hash"] != payload_hash or saved_owner != expected_owner:
                     raise BookingError("Esta confirmação pertence a outra escolha. Revise os dados antes de tentar novamente.")
                 row = conn.execute("""SELECT a.*,b.name AS barber,s.name AS service,a.price_at_booking AS price
                     FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id
                     WHERE a.id=?""", (previous["appointment_id"],)).fetchone()
                 if row["status"] != "confirmed":
                     raise BookingError("Esta reserva já foi cancelada. Inicie um novo agendamento.")
-                return {**dict(row), "access_code": _issue_access_code(conn, row["id"])}
+                return {**dict(row), "identification_code": identification_code(row["customer_phone"])}
         service = conn.execute("SELECT * FROM services WHERE id=?", (service_id,)).fetchone()
         barber = conn.execute("SELECT * FROM barbers WHERE id=?", (barber_id,)).fetchone()
         if not service or not barber:
@@ -208,12 +231,14 @@ def create_appointment(customer_name: str, customer_phone: str, service_id: int,
             raise BookingError("Esse horário acabou de ser ocupado. Consulte a disponibilidade novamente.")
         _check_blocks(conn, barber_id, start, end)
         cursor = conn.execute("INSERT INTO appointments(customer_name,customer_phone,barber_id,service_id,starts_at,ends_at,price_at_booking) VALUES (?,?,?,?,?,?,?)", (name, phone, barber_id, service_id, start.isoformat(), end.isoformat(), service["price"]))
-        access_code = _issue_access_code(conn, cursor.lastrowid)
+        if owner_hash is not None:
+            conn.execute("INSERT INTO booking_owners(appointment_id,channel,owner_hash) VALUES (?,?,?)",
+                         (cursor.lastrowid, owner_channel, owner_hash))
         if request_key:
             conn.execute("INSERT INTO booking_requests(request_hash,payload_hash,appointment_id) VALUES (?,?,?)",
                          (_access_digest(request_key), payload_hash, cursor.lastrowid))
         row = conn.execute("SELECT a.*, b.name AS barber, s.name AS service, a.price_at_booking AS price FROM appointments a JOIN barbers b ON b.id=a.barber_id JOIN services s ON s.id=a.service_id WHERE a.id=?", (cursor.lastrowid,)).fetchone()
-        return {**dict(row), "access_code": access_code}
+        return {**dict(row), "identification_code": identification_code(row["customer_phone"])}
 
 
 def find_appointments(customer_phone: str, path: str | Path | None = None) -> list[dict]:
@@ -222,11 +247,10 @@ def find_appointments(customer_phone: str, path: str | Path | None = None) -> li
     return [dict(r) for r in rows]
 
 
-def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool = False, path: str | Path | None = None, *, min_notice_hours: int = 3, access_code: str | None = None) -> dict:
+def cancel_appointment(appointment_id: int, customer_phone: str, confirmed: bool = False, path: str | Path | None = None, *, min_notice_hours: int = 3, access_code: str | None = None, conn=None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita antes de cancelar o agendamento.")
-    with connect(path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with _mutation_connection(path, conn) as conn:
         if access_code is not None:
             _require_access(conn, customer_phone, access_code, appointment_id)
         row = conn.execute("SELECT * FROM appointments WHERE id=? AND phone_key(customer_phone)=? AND status='confirmed'", (appointment_id, phone_key(customer_phone))).fetchone()
@@ -271,12 +295,11 @@ def _booking_duration(booking) -> int:
     return (_parse_start(booking["ends_at"]) - _parse_start(booking["starts_at"])) // timedelta(minutes=1)
 
 
-def reschedule_appointment(appointment_id: int, customer_phone: str, new_starts_at: str, confirmed: bool, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True, access_code: str | None = None) -> dict:
+def reschedule_appointment(appointment_id: int, customer_phone: str, new_starts_at: str, confirmed: bool, path: str | Path | None = None, *, min_notice_hours: int = 3, days_range: bool = True, access_code: str | None = None, conn=None) -> dict:
     if not confirmed:
         raise BookingError("Peça confirmação explícita da pessoa antes de remarcar.")
     start = _parse_start(new_starts_at)
-    with connect(path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with _mutation_connection(path, conn) as conn:
         if access_code is not None:
             _require_access(conn, customer_phone, access_code, appointment_id)
         old = _reschedulable_booking(conn, appointment_id, customer_phone, min_notice_hours)

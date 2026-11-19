@@ -364,15 +364,17 @@ def test_booking_shows_receipt_and_persists_across_reruns(booking_app, monkeypat
     ui.text_input(key="booking_phone").input("16999990000").run()
     button(ui, "Confirmar agendamento").click().run()
     assert not ui.exception
-    code = ui.session_state["booking_receipt"]["access_code"]
-    assert any(element.value == code for element in ui.code)
-    record = customer_booking(api, {"access_code": code})
+    receipt = ui.session_state["booking_receipt"]
+    assert "access_code" not in receipt
+    assert not any("Identificação da reserva" in item.value for item in ui.markdown)
+    record = customer_booking(api, {**receipt, "test_token": ui.session_state["customer_token"]})
     assert record["starts_at"] == slot["starts_at"]
     label, content, filename = downloads[-1]
     assert label == "Salvar comprovante"
     assert filename == f"reserva-imperial-{record['id']}.txt"
-    for detail in (record["service"], record["barber"], code, "R$ 50,00", "40 min"):
+    for detail in (record["service"], record["barber"], "R$ 50,00", "40 min"):
         assert detail in content
+    assert "Identificação da reserva" not in content and "0000" not in content
     assert "16999990000" not in content
     ui.run()
     assert any(message.value == "Agendamento confirmado!" for message in ui.success)
@@ -496,34 +498,35 @@ def test_conflict_refreshes_slots_and_preserves_contact(booking_app):
     refreshed = api.get("/availability", params={"service_id": 1,
                         "appointment_date": datetime.fromisoformat(slot["starts_at"]).date().isoformat()}).json()
     assert slot not in refreshed
-    time_buttons(ui)[1].click().run()
+    choose_slot(ui)
     assert ui.text_input(key="booking_name").value == "Cliente Teste"
     assert ui.text_input(key="booking_phone").value == "16999990000"
 
 
-def create_manage_booking(api, phone="16999990000"):
+def create_manage_booking(api, phone="16999990000", token="test-browser-token-" + "x" * 32):
     day = next_open_days()[0]
     slots = api.get("/availability", params={"service_id": 1, "appointment_date": day.isoformat()}).json()
     slot = slots[0]
     result = api.post("/appointments", json={
         "customer_name": "Cliente Teste", "customer_phone": phone,
         "service_id": 1, "barber_id": slot["barber_id"],
-        "starts_at": slot["starts_at"], "confirmed": True,
+        "starts_at": slot["starts_at"], "confirmed": True, "customer_token": token,
     })
     assert result.status_code == 200
-    return result.json()
+    return {**result.json(), "test_token": token}
 
 
 def customer_booking(api, record):
-    result = api.post("/appointments/lookup", json={"phone": "16999990000", "access_code": record["access_code"]})
+    result = api.post(f"/customer/appointments/{record['id']}", json={"customer_token": record["test_token"]})
     assert result.status_code == 200
     return result.json()
 
 
 def lookup_booking(ui, record, phone="16999990000"):
-    ui.text_input(key="lookup_phone").input(phone)
-    ui.text_input(key="lookup_code").input(record["access_code"])
-    button(ui, "Consultar").click().run()
+    ui.session_state["customer_token"] = record["test_token"]
+    ui.session_state["public_section"] = "Meus horários"
+    ui.run()
+    button(ui, "Atualizar reservas").click().run()
     assert not ui.exception
 
 
@@ -547,7 +550,7 @@ def test_manage_refreshes_a_booking_cancelled_elsewhere(booking_app):
     record = create_manage_booking(api)
     lookup_booking(ui, record)
     button(ui, "Cancelar reserva").click().run()
-    result = api.post(f"/appointments/{record['id']}/cancel", json={"phone": "16999990000", "access_code": record["access_code"], "confirmed": True})
+    result = api.post(f"/customer/appointments/{record['id']}/cancel", json={"customer_token": record["test_token"], "expected_starts_at": record["starts_at"], "confirmed": True})
     assert result.status_code == 200
 
     button(ui, "Confirmar cancelamento").click().run()
@@ -572,3 +575,85 @@ def test_reschedule_finds_formatted_phone_and_updates_reservation(booking_app):
     assert any(element.value == "Reserva remarcada." for element in ui.success)
     result = customer_booking(api, record)
     assert (result["id"], result["starts_at"]) == (record["id"], selected["starts_at"])
+
+
+def test_legacy_receipt_session_does_not_crash_after_upgrade(booking_app):
+    ui, api = booking_app
+    record = create_manage_booking(api)
+    ui.session_state["booking_receipt"] = {key: value for key, value in record.items() if key != "identification_code"}
+    ui.session_state["booking_receipt"]["access_code"] = "BI-legacy-session-value"
+    ui.run()
+    assert not ui.exception
+    assert any(item.value == "Agendamento confirmado!" for item in ui.success)
+    assert not ui.code
+    assert customer_booking(api, record)["status"] == "confirmed"
+
+
+def test_site_chat_cancels_only_after_written_confirmation_and_clears_receipt(booking_app):
+    ui, api = booking_app
+    choose_slot(ui)
+    ui.text_input(key="booking_name").input("Cliente Teste")
+    ui.text_input(key="booking_phone").input("16999990042").run()
+    button(ui, "Confirmar agendamento").click().run()
+    receipt = ui.session_state["booking_receipt"]
+    record = {**receipt, "test_token": ui.session_state["customer_token"]}
+    button(ui, "Conversar").click().run()
+    ui.chat_input(key="floating_chat_input").set_value("Quero cancelar minha reserva").run()
+    assert "Confirma o cancelamento" in ui.session_state["messages"][-1]["content"]
+    assert customer_booking(api, record)["status"] == "confirmed"
+    assert not any(item.key and "_suggestion_" in item.key for item in ui.button)
+    ui.chat_input(key="floating_chat_input").set_value("sim").run()
+    assert not ui.exception
+    assert "Cancelamento confirmado" in ui.session_state["messages"][-1]["content"]
+    assert customer_booking(api, record)["status"] == "cancelled"
+    assert ui.session_state.get("booking_receipt") is None
+
+
+def test_recovery_form_restores_legacy_booking_and_allows_confirmed_cancellation(booking_app, monkeypatch):
+    from barber_bot import customer_recovery as recovery
+    monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
+    monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)
+    ui, api = booking_app
+    record = create_manage_booking(api, phone="16999990042")
+    with db.connect() as conn:
+        conn.execute("DELETE FROM booking_owners WHERE appointment_id=?", (record["id"],))
+    ui.session_state["public_section"] = "Meus horários"
+    ui.run()
+    assert not any(item.label == "Cancelar reserva" for item in ui.button)
+    next(item for item in ui.text_input if item.label == "Telefone usado na reserva").input("16999990042")
+    button(ui, "Verificar pelo Telegram").click().run()
+    challenge = ui.session_state["customer_recovery_challenge"]
+    recovery.issue_telegram_code(challenge["challenge_id"], "123", "123", {"user_id": 123, "phone_number": "5516999990042"})
+    next(item for item in ui.text_input if item.label == "Código recebido no Telegram").input("123456")
+    button(ui, "Acessar minhas reservas").click().run()
+    assert not ui.exception
+    assert any("Telefone confirmado" in item.value for item in ui.success)
+    button(ui, "Cancelar reserva").click().run()
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+    button(ui, "Confirmar cancelamento").click().run()
+    assert not ui.exception
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "cancelled"
+
+
+def test_chat_recovers_booking_and_masks_phone_and_one_time_code(booking_app, monkeypatch):
+    from barber_bot import customer_recovery as recovery
+    monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
+    monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)
+    ui, api = booking_app
+    record = create_manage_booking(api, phone="16999990042")
+    button(ui, "Conversar").click().run()
+    ui.chat_input(key="floating_chat_input").set_value("quero ver meu agendamento").run()
+    assert ui.session_state["chat_recovery_stage"] == "phone"
+    ui.chat_input(key="floating_chat_input").set_value("16999990042").run()
+    assert ui.session_state["chat_recovery_stage"] == "code"
+    answer = ui.session_state["messages"][-1]["content"]
+    nonce = answer.split("recover_", 1)[1].split(")", 1)[0]
+    recovery.issue_telegram_code(nonce, "123", "123", {"user_id": 123, "phone_number": "5516999990042"})
+    ui.chat_input(key="floating_chat_input").set_value("123456").run()
+    assert not ui.exception
+    assert "Telefone confirmado" in ui.session_state["messages"][-1]["content"]
+    assert f"#{record['id']}" in ui.session_state["messages"][-1]["content"]
+    assert "123456" not in str(ui.session_state["messages"])
+    assert "16999990042" not in str(ui.session_state["messages"])

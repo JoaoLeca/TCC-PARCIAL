@@ -1,5 +1,6 @@
 import os
 import uuid
+import secrets
 from calendar import Calendar, SUNDAY
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -40,8 +41,8 @@ def receipt_text(booking, shop_name):
     details = "\n".join(f"{label} — {value}" for label, value in booking_detail_rows(booking))
     return (
         f"{shop_name}\nComprovante da reserva #{booking['id']}\n\n{details}\n\n"
-        f"Código privado de acesso\n{booking['access_code']}\n\n"
-        "Em Meus horários, use o telefone informado na reserva e este código privado.\n"
+        "Para gerenciar, use Meus horários nesta sessão ou solicite pela mesma conversa que reservou.\n"
+        "Em outro aparelho, confirme seu telefone pelo Telegram para recuperar o acesso.\n"
         "Guarde o comprovante em um local seguro.\n"
     )
 
@@ -226,6 +227,7 @@ def submit_booking(payload):
             st.rerun()
         response.raise_for_status()
         state.booking_receipt = response.json()
+        state.pop("manage_records", None)
     except requests.RequestException:
         state.booking_pending = payload
         st.warning("A confirmação não foi recebida. Tente novamente para recuperar o resultado desta mesma reserva.")
@@ -243,12 +245,10 @@ def render_booking(catalog, shop_name):
         st.warning(notice)
     if receipt := state.get("booking_receipt"):
         st.success("Agendamento confirmado!")
-        st.markdown(f"**Código da reserva #{receipt['id']}**")
+        st.markdown(f"**Reserva #{receipt['id']}**")
         show_booking_details(receipt)
-        with st.container(key="booking_receipt_code", border=True):
-            st.markdown("**Código privado de acesso**")
-            st.code(receipt["access_code"], language=None)
-            st.caption("Use o telefone da reserva e este código em Meus horários. O comprovante inclui o código. Guarde-o em um local seguro.")
+        with st.container(key="booking_receipt_actions", border=True):
+            st.caption("Para consultar, remarcar ou cancelar, abra Meus horários nesta sessão ou escreva no chat.")
             st.download_button(
                 "Salvar comprovante", receipt_text(receipt, shop_name),
                 file_name=f"reserva-imperial-{receipt['id']}.txt", mime="text/plain; charset=utf-8",
@@ -383,6 +383,7 @@ def render_booking(catalog, shop_name):
         "barber_id": slot["barber_id"], "starts_at": slot["starts_at"], "confirmed": True,
         "expected_price": service["price"], "expected_duration": service["duration_minutes"],
         "request_key": str(uuid.uuid4()), "session_id": state.session_id,
+        "customer_token": state.customer_token,
     }
     save_booking_contact()
     state.booking_pending = payload
@@ -396,29 +397,29 @@ def request_managed_booking(endpoint, payload):
 
 
 def clear_managed_booking():
-    for key in ("manage_credentials", "manage_records", "manage_action", "manage_slots", "manage_notice"):
+    for key in ("manage_credentials", "manage_records", "manage_action", "manage_slots", "manage_notice", "customer_recovery_challenge"):
         st.session_state.pop(key, None)
 
 
 def handle_management_error(exc, message):
     if exc.response is not None and exc.response.status_code == 404:
         clear_managed_booking()
-        st.session_state.manage_notice = ("warning", "Telefone ou código privado inválido. Confira os dados ou fale com a equipe.")
+        st.session_state.manage_notice = ("warning", "Confirme novamente seu telefone pelo Telegram para acessar esta reserva.")
         st.rerun()
     st.error(message)
 
 
 def update_managed_booking(record, credentials, action, new_start=None):
     state = st.session_state
-    payload = {**credentials, "confirmed": True}
+    payload = {**credentials, "confirmed": True, "expected_starts_at": record["starts_at"]}
     if new_start is not None:
         payload["new_starts_at"] = new_start
     try:
-        result = requests.post(f"{API}/appointments/{record['id']}/{action}", json=payload, timeout=10)
+        result = requests.post(f"{API}/customer/appointments/{record['id']}/{action}", json=payload, timeout=10)
         if result.status_code == 409:
             state.manage_notice = ("warning", result.json()["detail"])
             state.pop("manage_slots", None)
-            state.manage_records = [request_managed_booking("appointments/lookup", credentials)]
+            state.manage_records = request_managed_booking("customer/appointments", credentials)
             st.rerun()
         result.raise_for_status()
         record.update(result.json())
@@ -427,6 +428,8 @@ def update_managed_booking(record, credentials, action, new_start=None):
         return
 
     state.manage_records.sort(key=lambda item: item["starts_at"])
+    if state.get("booking_receipt", {}).get("id") == record["id"]:
+        state.pop("booking_receipt", None)
     state.manage_notice = ("success", "Reserva cancelada." if action == "cancel" else "Reserva remarcada.")
     state.pop("manage_action", None)
     state.pop("manage_slots", None)
@@ -454,7 +457,7 @@ def render_reschedule(record, credentials, today):
         state.pop("manage_slots", None)
         state.pop(slot_key, None)
         try:
-            slots = request_managed_booking(f"appointments/{appointment_id}/reschedule-options", {
+            slots = request_managed_booking(f"customer/appointments/{appointment_id}/reschedule-options", {
                 **credentials, "appointment_date": new_date.isoformat(),
             })
         except requests.RequestException as exc:
@@ -478,27 +481,23 @@ def render_reschedule(record, credentials, today):
 
 def render_managed_bookings():
     state = st.session_state
-    st.subheader("Consultar uma reserva")
-    st.caption("Use o telefone da reserva e o código privado do comprovante. Se perdeu o código ou reservou antes dessa mudança, fale com a equipe.")
-    with st.form("lookup_appointments", clear_on_submit=True):
-        phone = st.text_input("Telefone usado no agendamento", key="lookup_phone",
-                              placeholder="(16) 99999-9999", max_chars=30).strip()
-        code = st.text_input("Código privado de acesso", key="lookup_code", type="password",
-                             max_chars=64).strip()
-        lookup = st.form_submit_button("Consultar", type="primary")
-    if lookup:
+    st.subheader("Meus horários")
+    st.caption("Consulte, remarque ou cancele suas reservas. Se não aparecerem, confirme seu telefone abaixo para recuperar o acesso.")
+    credentials = {"customer_token": state.customer_token}
+    if state.get("manage_credentials") != credentials:
         clear_managed_booking()
-        if not phone or not code:
-            st.info("Informe o telefone com DDD e o código privado da reserva.")
-            return
-        credentials = {"phone": phone, "access_code": code}
+    state.manage_credentials = credentials
+    refresh = st.button("Atualizar reservas", key="manage_refresh")
+    if refresh:
+        state.pop("manage_action", None)
+        state.pop("manage_slots", None)
+    if refresh or "manage_records" not in state:
         try:
-            state.manage_records = [request_managed_booking("appointments/lookup", credentials)]
-            state.manage_credentials = credentials
+            state.manage_records = request_managed_booking("customer/appointments", credentials)
         except requests.RequestException as exc:
-            handle_management_error(exc, "Não foi possível consultar a reserva. Confira os dados ou tente novamente.")
+            handle_management_error(exc, "Não foi possível consultar suas reservas. Tente novamente.")
             return
-
+    render_customer_recovery(credentials, expanded=not state.manage_records)
     notice = state.pop("manage_notice", None)
     if notice:
         kind, message = notice
@@ -506,7 +505,8 @@ def render_managed_bookings():
     records = state.get("manage_records")
     if records is None:
         return
-    st.button("Encerrar consulta", on_click=clear_managed_booking)
+    if not records:
+        st.info("Nenhuma reserva vinculada a esta sessão.")
 
     now = datetime.now(ZoneInfo(TIMEZONE))
     for record in records:
@@ -544,6 +544,46 @@ def render_managed_bookings():
                 state.pop("manage_action", None)
                 state.pop("manage_slots", None)
                 st.rerun()
+
+
+def render_customer_recovery(credentials, *, expanded=False):
+    state = st.session_state
+    with st.expander("Localizar reservas pelo telefone", expanded=expanded):
+        st.caption("Reservou em outro aparelho ou antes desta atualização? Confirme o telefone pelo Telegram para consultar, remarcar ou cancelar sem falar com a equipe.")
+        challenge = state.get("customer_recovery_challenge")
+        if not challenge:
+            with st.form("customer_recovery_phone"):
+                phone = st.text_input("Telefone usado na reserva", placeholder="(16) 99999-9999", max_chars=30)
+                request = st.form_submit_button("Verificar pelo Telegram", type="primary")
+            if request:
+                try:
+                    state.customer_recovery_challenge = request_managed_booking("customer/recovery", {**credentials, "phone": phone})
+                    st.rerun()
+                except requests.RequestException as exc:
+                    detail = exc.response.json().get("detail") if exc.response is not None else None
+                    st.error(detail if isinstance(detail, str) else "Não foi possível iniciar a verificação. Tente novamente.")
+            return
+        st.link_button("Abrir Telegram para receber o código", challenge["telegram_url"], width="stretch")
+        st.caption("Use a conta do Telegram com o mesmo telefone da reserva. No bot, toque em Iniciar e compartilhe seu próprio contato. Depois informe aqui os seis dígitos recebidos. O código vale por até cinco minutos.")
+        with st.form("customer_recovery_code", clear_on_submit=True):
+            code = st.text_input("Código recebido no Telegram", type="password", max_chars=6)
+            verify = st.form_submit_button("Acessar minhas reservas", type="primary")
+        if verify:
+            try:
+                state.manage_records = request_managed_booking("customer/recovery/verify", {
+                    **credentials, "challenge_id": challenge["challenge_id"], "code": code,
+                })
+                state.pop("customer_recovery_challenge", None)
+                state.pop("manage_action", None)
+                state.pop("manage_slots", None)
+                state.manage_notice = ("success", "Telefone confirmado. Suas reservas estão disponíveis abaixo.")
+                st.rerun()
+            except requests.RequestException as exc:
+                detail = exc.response.json().get("detail") if exc.response is not None else None
+                st.error(detail if isinstance(detail, str) else "Não foi possível verificar o código. Tente novamente.")
+        if st.button("Usar outro telefone ou solicitar novo código", key="customer_recovery_restart"):
+            state.pop("customer_recovery_challenge", None)
+            st.rerun()
 
 
 def show_chat_message(role, content, booking_options=None, key_prefix=None):
@@ -601,6 +641,7 @@ def render_chat(surface, shop_name, *, compact=False):
     if not retry and (not prompt or not prompt.strip()):
         return
     if not retry:
+        state.chat_recovery_input = prompt if state.get("chat_recovery_stage") else None
         state.messages.extend(sanitize_chat_messages([{"role": "user", "content": prompt}]))
     with history:
         if not retry:
@@ -608,11 +649,16 @@ def render_chat(surface, shop_name, *, compact=False):
         with st.chat_message("assistant"):
             st.caption("Assistente virtual")
             with st.spinner("Consultando o atendimento…"):
-                result = request_chat_answer(state.session_id, state.messages)
+                result = request_chat_answer(state.session_id, state.messages, recovery_input=state.get("chat_recovery_input"))
     if result.get("retryable"):
         state.chat_error = result["answer"]
     else:
         state.pop("chat_error", None)
+        state.pop("chat_recovery_input", None)
+        state.chat_recovery_stage = result.get("recovery_stage")
+        state.pop("manage_records", None)
+        if result.get("outcome") == "completed" and result.get("intent") in ("cancelar", "remarcar"):
+            state.pop("booking_receipt", None)
         message = {"role": "assistant", "content": result["answer"]}
         if result.get("booking_options"):
             message["booking_options"] = result["booking_options"]
@@ -690,10 +736,13 @@ def render_support_contact(surface):
             st.error(message)
 
 
-def request_chat_answer(session_id, messages):
+def request_chat_answer(session_id, messages, *, recovery_input=None):
     try:
         recent = [{"role": message["role"], "content": message["content"][:4000]} for message in messages[-16:]]
-        response = requests.post(f"{API}/chat", json={"session_id": session_id, "messages": recent}, timeout=90)
+        payload = {"session_id": session_id, "messages": recent, "customer_token": st.session_state.customer_token}
+        if recovery_input is not None:
+            payload["recovery_input"] = recovery_input
+        response = requests.post(f"{API}/chat", json=payload, timeout=90)
         response.raise_for_status()
         return response.json()
     except requests.RequestException:
@@ -934,6 +983,8 @@ st.html("""
 st.title(shop_name)
 st.caption("Atendimento e agendamentos")
 
+if "customer_token" not in st.session_state:
+    st.session_state.customer_token = secrets.token_urlsafe(32)
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
@@ -948,7 +999,8 @@ with tab_chat:
     with st.container(key="imperial_chat_tab", border=True):
         render_chat("tab", shop_name)
 with tab_manage:
-    render_managed_bookings()
+    if tab_manage.open:
+        render_managed_bookings()
 
 with tab_info:
     st.subheader("Informações da barbearia")
