@@ -19,6 +19,23 @@ def _requested_day(text, today):
             return date(int(local[3] or today.year), int(local[2]), int(local[1]))
     except ValueError:
         return "invalid"
+    day_only = re.search(r"\bdia\s+(\d{1,2})\b", text)
+    if not day_only:
+        day_only = re.fullmatch(r"\s*(\d{1,2})\s*", text)
+    if day_only:
+        wanted = int(day_only[1])
+        if not 1 <= wanted <= 31:
+            return "invalid"
+        for offset in range(13):
+            month_index = today.month - 1 + offset
+            year, month = today.year + month_index // 12, month_index % 12 + 1
+            try:
+                candidate = date(year, month, wanted)
+            except ValueError:
+                continue
+            if candidate >= today:
+                return candidate
+        return "invalid"
     if "depois de amanha" in text:
         return today + timedelta(days=2)
     if "amanha" in text:

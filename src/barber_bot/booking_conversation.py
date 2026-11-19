@@ -123,6 +123,26 @@ def _options(conn, channel, owner_hash, state, booking, text):
     today = datetime.now(TZ).date()
     _remember_preferences(state, text)
     day_text = state.get("day")
+    if day_text is None and re.search(r"\b(?:que|qual|quais|quando)\b.*\b(?:dia|data|horarios?|vagas?|disponiveis?)\b", text):
+        first, last = today + timedelta(days=MIN_BOOKING_DAYS), today + timedelta(days=MAX_BOOKING_DAYS)
+        preference = state.get("preference")
+        choices = []
+        for offset in range(MIN_BOOKING_DAYS, MAX_BOOKING_DAYS + 1):
+            candidate_day = today + timedelta(days=offset)
+            slots = reschedule_options(booking["id"], booking["customer_phone"], candidate_day, min_notice_hours=3)
+            for slot in _three_options(_preference_slots(slots, preference)):
+                if all(old["starts_at"] != slot["starts_at"] for old in choices):
+                    choices.append(slot)
+                if len(choices) == 3:
+                    break
+            if len(choices) == 3:
+                break
+        state["options"], state["stage"] = choices, "options"
+        _save(conn, channel, owner_hash, state)
+        if not choices:
+            return _reply("reschedule", f"Não encontrei horários disponíveis para remarcar entre {first:%d/%m} e {last:%d/%m}. Prefere outro período ou quer falar com a equipe?")
+        lines = [f"{index}. {datetime.fromisoformat(slot['starts_at']):%d/%m/%Y às %H:%M} com {slot['barber']}" for index, slot in enumerate(choices, 1)]
+        return _reply("reschedule", "Consultei a agenda. Estas são as próximas opções disponíveis para remarcar:\n\n" + "\n".join(lines) + "\n\nEscolha pelo número ou escreva o horário. Depois vou pedir sua confirmação final.", tools=("buscar_opcoes_remarcacao",))
     if day_text is None:
         _save(conn, channel, owner_hash, state)
         return _reply("reschedule", "Para qual nova data você quer remarcar? Pode dizer amanhã ou informar dia/mês; se quiser, diga também o horário ou período do dia.")
@@ -131,7 +151,10 @@ def _options(conn, channel, owner_hash, state, booking, text):
         state.pop("day", None)
         state.pop("options", None)
         _save(conn, channel, owner_hash, state)
-        return _reply("reschedule", f"Escolha uma nova data válida entre {first:%d/%m} e {last:%d/%m}.")
+        if day_text == "invalid":
+            return _reply("reschedule", f"Não consegui identificar uma data válida. Para remarcar, escolha uma data entre {first:%d/%m} e {last:%d/%m}. Qual prefere?")
+        requested = datetime.fromisoformat(day_text).date()
+        return _reply("reschedule", f"A data {requested:%d/%m} fica fora do período disponível para remarcação. No momento, posso oferecer datas entre {first:%d/%m} e {last:%d/%m}. Qual data prefere?")
     preference = state.get("preference")
     if preference and preference["invalid"]:
         _save(conn, channel, owner_hash, state)
@@ -141,6 +164,9 @@ def _options(conn, channel, owner_hash, state, booking, text):
     state["options"], state["stage"] = choices, "options"
     _save(conn, channel, owner_hash, state)
     if not choices:
+        requested = datetime.fromisoformat(day_text).date()
+        if requested.weekday() == 6:
+            return _reply("reschedule", f"{requested:%d/%m} cai em um domingo, quando a barbearia está fechada. Escolha outra data entre {first:%d/%m} e {last:%d/%m} e consulto os horários disponíveis.")
         return _reply("reschedule", "Não encontrei horários disponíveis para essa escolha. Qual outra data, horário ou período prefere?", tools=("buscar_opcoes_remarcacao",))
     lines = [f"{index}. {datetime.fromisoformat(slot['starts_at']):%d/%m/%Y às %H:%M} com {slot['barber']}" for index, slot in enumerate(choices, 1)]
     return _reply("reschedule", "Encontrei estas opções para remarcar:\n\n" + "\n".join(lines) + "\n\nEscolha pelo número ou escreva o horário. Depois vou pedir sua confirmação final.", tools=("buscar_opcoes_remarcacao",))

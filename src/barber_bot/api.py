@@ -296,15 +296,15 @@ def chat(payload: ChatIn):
         value = payload.recovery_input.get_secret_value() if payload.recovery_input else latest
         result = handle_chat_recovery(value, owner_key)
         if result is None:
-            result = handle_booking_message(messages, "web", owner_key)
-            if result and result.get("needs_verification") and owner_key:
-                result = begin_chat_recovery(owner_key, messages[-1]["content"])
-        if result is None:
-            result = run_agent(messages, session_id=payload.session_id)
+            def booking_handler(request_text):
+                return handle_booking_message([{"role": "user", "content": request_text}], "web", owner_key)
+            result = run_agent(messages, session_id=payload.session_id, booking_handler=booking_handler)
+            if result.get("needs_verification") and owner_key:
+                result = begin_chat_recovery(owner_key, latest)
         elapsed = round((perf_counter() - started) * 1000)
         record_interaction(payload.session_id, messages, result, elapsed)
-        options = None
-        if result.get("mode") == "guided" and result.get("service") and result.get("slots"):
+        options = result.get("booking_options")
+        if not options and result.get("mode") == "guided" and result.get("service") and result.get("slots"):
             options = {"service": result["service"], "slots": result["slots"][:3]}
         return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"],
                 "latency_ms": elapsed, "mode": result.get("mode", "ai"), "support_request": result.get("support_request"),

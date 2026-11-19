@@ -31,5 +31,5 @@ def llm_without_rag(question: str) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("Configure OPENAI_API_KEY para rodar o baseline de LLM sem RAG.")
     from langchain_openai import ChatOpenAI
-    answer = ChatOpenAI(model=OPENAI_MODEL, temperature=0, api_key=OPENAI_API_KEY).invoke(question)
+    answer = ChatOpenAI(model=OPENAI_MODEL, api_key=OPENAI_API_KEY).invoke(question)
     return str(answer.content)

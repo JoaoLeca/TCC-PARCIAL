@@ -48,7 +48,7 @@ Por padrão, clientes podem agendar e remarcar online de 1 a 7 dias de antecedê
 
 Em **Meus horários**, consulte e gerencie as reservas feitas na sessão atual. No chat do site ou na conversa privada do Telegram que criou a reserva, peça a consulta, o cancelamento ou a remarcação por escrito. O assistente pede confirmação explícita antes de alterar. Use **Agendar** para criar reservas no site.
 
-O atendimento guiado consulta serviços, preços e vagas mesmo sem chave de IA. Experimente «Quero agendar corte», seguido de «amanhã à tarde». Ele aproveita o contexto, apresenta até três opções reais e procura alternativas quando a combinação estiver indisponível. Perguntas abertas e políticas com recuperação RAG usam a IA quando configurada. Se o serviço de IA falhar, o atendimento oferece consultas guiadas e encaminhamento à equipe.
+No chat do site, o modelo de IA interpreta a conversa e usa ferramentas para consultar serviços, preços, agenda e políticas. Experimente «Quero agendar corte» e depois «que dia tem disponível?»; o assistente usa o contexto e apresenta opções reais. A chave `OPENAI_API_KEY` é obrigatória para conversar pelo site. A API valida a agenda e as confirmações de reservas no servidor. O Telegram mantém respostas guiadas para consultas conhecidas quando a chave não está configurada.
 
 No site, as opções retornadas pelo chat são clicáveis e abrem **Agendar** com serviço, profissional, data e horário preenchidos. A disponibilidade e o catálogo são consultados novamente ao escolher. A reserva exige revisão e confirmação explícita.
 
@@ -75,7 +75,7 @@ uv sync --python 3.12
 
 Se preferirem usar o `venv` e o `pip`, criem o ambiente com Python 3.12, ativem `.venv` e executem `pip install .`.
 
-Copie `.env.example` para `.env` (`Copy-Item .env.example .env` no PowerShell ou `cp .env.example .env` no macOS/Linux). O protótipo de agenda e consultas funciona sem chave. Para ativar GPT e busca RAG, crie uma chave na plataforma da OpenAI e insira-a localmente em `OPENAI_API_KEY` no `.env`. A chave não deve ser enviada ao GitHub. Depois, rode:
+Copie `.env.example` para `.env` (`Copy-Item .env.example .env` no PowerShell ou `cp .env.example .env` no macOS/Linux). Para usar o chat do site e a busca RAG, crie uma chave na plataforma da OpenAI e insira-a localmente em `OPENAI_API_KEY` no `.env`. O modelo padrão é `gpt-5.4-mini`; as chamadas da API são cobradas por tokens de entrada e saída. A chave não deve ser enviada ao GitHub nem ao navegador. Sem a chave, o chat do site informa que a IA está indisponível; a agenda e o formulário de agendamento continuam acessíveis. Depois, rode:
 
 ```bash
 uv run uvicorn barber_bot.api:app --app-dir src --reload
