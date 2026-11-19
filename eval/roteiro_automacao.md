@@ -25,6 +25,8 @@ Este roteiro descreve procedimentos a executar. Não contém resultados de volun
 
 Em cada execução, registre `run_id`, cenário, canal, data/hora, configuração, passos efetivamente seguidos, resultado esperado/observado, aprovado/reprovado/não executado e justificativa. Use um identificador local de participante em avaliações com voluntários. Evidências compartilhadas devem ocultar telefones, nomes de clientes, chat IDs e códigos de acesso.
 
+Os cenários do site podem ser executados automaticamente com `eval/aceitacao_site.mjs`, sempre em uma instalação de avaliação com banco separado. Ficam de fora o A04 e a parte do A01 pelo Telegram. O script também cobre dois cenários adicionais: A09, alteração de reservas por mensagem, e A10, isolamento entre sessões e recuperação sem o bot configurado. O ensaio de 18/11/2026, com relatório, evidências e telemetria pseudonimizada, está em [`eval/resultados/2026-11-18-aceitacao-site/`](resultados/2026-11-18-aceitacao-site/README.md).
+
 ## Exportação e métricas operacionais
 
 Na raiz do projeto, após as execuções:
