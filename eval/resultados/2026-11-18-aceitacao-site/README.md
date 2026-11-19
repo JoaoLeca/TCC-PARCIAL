@@ -2,6 +2,8 @@
 
 > Ensaio executado pelos desenvolvedores com automação do navegador e dados fictícios. **Não** é avaliação com participantes e não substitui a avaliação humana de resolução descrita em [`eval/roteiro_automacao.md`](../../roteiro_automacao.md).
 
+> **Atualização:** o defeito do A05 foi corrigido e o ensaio foi repetido no mesmo dia, com os nove cenários executáveis aprovados. Veja a [repetição após a correção](../2026-11-18-aceitacao-site-pos-correcao/README.md).
+
 ## Configuração
 
 - **Código avaliado:** commit `f78bc9b` da `main`.
