@@ -1,0 +1,11 @@
+participante_id,versao_ordem,data_sessao,dia_usado,tarefa_id,fcr_ids,inicio,fim,resultado,ajuda,motivo_ajuda,erros,repeticoes,observacoes
+P01,A,,,T01,FCR02,,,,,,,,
+P01,A,,,T02,FCR05;FCR10,,,,,,,,
+P01,A,,,T03,FCR11,,,,,,,,
+P01,A,,,T04,FCR13;FCR24;FCR30,,,,,,,,
+P01,A,,,T05,FCR18,,,,,,,,
+P01,A,,,T06,FCR22,,,,,,,,
+P01,A,,,T07,FCR19,,,,,,,,
+P01,A,,,T08,FCR15,,,,,,,,
+P01,A,,,T09,FCR27,,,,,,,,
+P01,A,,,T10,FCR04;FCR06,,,,,,,,
