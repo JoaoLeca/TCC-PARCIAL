@@ -15,6 +15,9 @@ from typing import Any
 import requests
 
 from barber_bot.assistant import run_agent
+from barber_bot.barber_telegram import (
+    barber_appointment, barber_appointments, link_barber_telegram, notify_barber,
+)
 from barber_bot.booking_conversation import handle_booking_message
 from barber_bot.config import (
     MAX_BOOKING_DAYS,
@@ -153,10 +156,28 @@ def send_message(chat_id: str, text: str, reply_markup: dict[str, Any] | None = 
 
 def _main_keyboard() -> dict[str, Any]:
     return {
-        "keyboard": [[{"text": "📅 Agendar"}, {"text": "🕒 Consultar horários"}]],
+        "keyboard": [[{"text": "📅 Agendar"}, {"text": "🕒 Consultar horários"}],
+                     [{"text": "🗓 Minha agenda"}]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
+
+
+def _show_barber_agenda(chat_id: str) -> None:
+    barber, appointments = barber_appointments(chat_id)
+    if barber is None:
+        send_message(chat_id, "Esta conta não está vinculada a um barbeiro. Use /vincular e compartilhe o contato cadastrado pela equipe.", _main_keyboard())
+        return
+    if not appointments:
+        send_message(chat_id, f"Não há próximos agendamentos para {barber['name']}.", _main_keyboard())
+        return
+    rows = []
+    for item in appointments:
+        start = datetime.fromisoformat(item["starts_at"]).astimezone(TZ)
+        rows.append([(f"{start:%d/%m %H:%M} · {item['service']}", f"agenda:view:{item['id']}")])
+    state = {"step": "barber_agenda"}
+    send_message(chat_id, f"Próximos agendamentos de {barber['name']}. Toque em um para ver os detalhes:",
+                 _flow_keyboard(chat_id, state, rows))
 
 
 def _private_chat(update: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -320,6 +341,8 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
         _show_slots(chat_id, state)
         return
 
+    notify_barber(booking)
+
     # Salva a reserva antes da resposta para evitar duplicidade.
     completed = {"step": "completed", "appointment_id": booking["id"],
                  "receipt_pending": True, "callback_token": state["callback_token"]}
@@ -397,6 +420,28 @@ def _handle_callback(callback: dict[str, Any]) -> None:
 
 
 def _dispatch_callback(chat_id: str, state: dict[str, Any], data: str) -> None:
+    if data == "agenda:list" and state.get("step") == "barber_agenda":
+        _show_barber_agenda(chat_id)
+        return
+    if data.startswith("agenda:view:") and state.get("step") == "barber_agenda":
+        appointment_id = int(data.rsplit(":", 1)[1])
+        item = barber_appointment(chat_id, appointment_id)
+        if not item:
+            send_message(chat_id, "Este agendamento não pertence à sua agenda ou não está mais ativo.", _main_keyboard())
+            return
+        start = datetime.fromisoformat(item["starts_at"]).astimezone(TZ)
+        end = datetime.fromisoformat(item["ends_at"]).astimezone(TZ)
+        message = (
+            f"Agendamento #{item['id']}\n"
+            f"Cliente: {item['customer_name']}\n"
+            f"Serviço: {item['service']}\n"
+            f"Horário: {start:%d/%m/%Y às %H:%M}–{end:%H:%M}\n"
+            f"Valor: {format_price(item['price'])}"
+        )
+        send_message(chat_id, message, _flow_keyboard(
+            chat_id, {"step": "barber_agenda"}, [[("← Voltar à agenda", "agenda:list")]]
+        ))
+        return
     _discard_management_proposal(chat_id)
     if state.get("step") == "completed":
         if data == "confirm":
@@ -479,6 +524,10 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
     contact = message.get("contact")
     sender_id = str(message.get("from", {}).get("id", ""))
     command = raw_text.split()[0].split("@", 1)[0].lower() if raw_text.startswith("/") else ""
+    if command == "/vincular":
+        _save_state(chat_id, {"step": "barber_link"})
+        send_message(chat_id, "Para vincular sua conta ao cadastro do barbeiro, compartilhe seu próprio contato usando o botão abaixo.", _phone_keyboard())
+        return
     if command == "/atendimento":
         ticket = get_customer_request(f"telegram:{chat_id}", "telegram")
         if ticket is None:
@@ -494,6 +543,22 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
                          "Use /atendimento para consultar novamente.")
         return
     state = _load_state(chat_id)
+    if state.get("step") == "barber_link":
+        if contact:
+            try:
+                barber_name = link_barber_telegram(chat_id, sender_id, contact)
+            except ValueError as exc:
+                send_message(chat_id, str(exc), _phone_keyboard())
+                return
+            _save_state(chat_id, {"step": "chat"})
+            send_message(chat_id, f"Telegram vinculado ao cadastro de {barber_name}. Use /minhaagenda para consultar seus horários.", _main_keyboard())
+            return
+        if command != "/cancelar":
+            send_message(chat_id, "Use o botão para compartilhar o próprio contato. Não envie o telefone como texto.", _phone_keyboard())
+            return
+    if command == "/minhaagenda" or raw_text.casefold() == "🗓 minha agenda":
+        _show_barber_agenda(chat_id)
+        return
     if command == "/start" and re.fullmatch(r"/start(?:@\w+)? recover_[A-Za-z0-9_-]{32}", raw_text):
         _discard_management_proposal(chat_id)
         _save_state(chat_id, {"step": "verify_reservations", "recovery_nonce": raw_text.split("recover_", 1)[1], **_receipt_fields(state)})
@@ -539,6 +604,7 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
             "Olá! Sou o assistente da Barbearia Imperial. Posso responder dúvidas, consultar horários e fazer reservas.\n\n"
             "Use /horarios para consultar disponibilidade, /agendar para reservar ou /cancelar para interromper um fluxo. "
             "Use /atendente para solicitar a equipe e /atendimento para acompanhar seu protocolo. "
+            "Barbeiros: use /vincular para associar sua conta e /minhaagenda para ver seus agendamentos. "
             "Para proteger seus dados, o agendamento deve ser feito nesta conversa privada.",
             _main_keyboard(),
         )
@@ -699,6 +765,8 @@ def main() -> None:
             {"command": "comprovante", "description": "Reenviar o último comprovante"},
             {"command": "atendente", "description": "Solicitar atendimento humano"},
             {"command": "atendimento", "description": "Consultar situação do atendimento"},
+            {"command": "vincular", "description": "Vincular conta do barbeiro"},
+            {"command": "minhaagenda", "description": "Ver os próprios agendamentos"},
             {"command": "ajuda", "description": "Ver ajuda"},
         ]})
     except TelegramError:

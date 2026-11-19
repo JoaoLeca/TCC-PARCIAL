@@ -4,7 +4,7 @@ from barber_bot.config import DATABASE_PATH
 
 BARBERS = [
     ("Rafael", [1, 2, 3, 4, 5]),
-    ("Diego", [0, 1, 3, 4, 5]),
+    ("Caetano", [0, 1, 3, 4, 5]),
     ("Alecio", [0, 1, 2, 3, 4]),
 ]
 SERVICES = [
@@ -41,7 +41,8 @@ def initialize_database(path: str | Path | None = None) -> None:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS barbers (
             id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-            working_days TEXT NOT NULL
+            working_days TEXT NOT NULL, telegram_phone TEXT NOT NULL DEFAULT '',
+            telegram_chat_id TEXT
         );
         CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
@@ -161,6 +162,13 @@ def initialize_database(path: str | Path | None = None) -> None:
             conn.execute("ALTER TABLE interaction_logs ADD COLUMN channel TEXT NOT NULL DEFAULT 'web'")
         if not any(column["name"] == "released_at" for column in conn.execute("PRAGMA table_info(schedule_blocks)")):
             conn.execute("ALTER TABLE schedule_blocks ADD COLUMN released_at TEXT")
+        barber_columns = {column["name"] for column in conn.execute("PRAGMA table_info(barbers)")}
+        if "telegram_phone" not in barber_columns:
+            conn.execute("ALTER TABLE barbers ADD COLUMN telegram_phone TEXT NOT NULL DEFAULT ''")
+        if "telegram_chat_id" not in barber_columns:
+            conn.execute("ALTER TABLE barbers ADD COLUMN telegram_chat_id TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_barbers_telegram_phone ON barbers(telegram_phone) WHERE telegram_phone <> ''")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_barbers_telegram_chat ON barbers(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL")
         conn.execute("""
             INSERT OR IGNORE INTO shop_profile VALUES
             (1, 'Barbearia Imperial', 'Avenida 330, Ribeirão Preto, SP', '(16) 91111-3322',
@@ -172,6 +180,7 @@ def initialize_database(path: str | Path | None = None) -> None:
             UPDATE appointments SET price_at_booking=(SELECT price FROM services WHERE id=appointments.service_id)
             WHERE price_at_booking IS NULL
         """)
+        conn.execute("UPDATE barbers SET name='Caetano' WHERE name='Diego' AND NOT EXISTS (SELECT 1 FROM barbers WHERE name='Caetano')")
         for name, days in BARBERS:
             conn.execute("INSERT OR IGNORE INTO barbers(name,working_days) VALUES (?,?)", (name, ",".join(map(str, days))))
         for name, price, duration in SERVICES:

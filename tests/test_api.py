@@ -17,10 +17,10 @@ def test_services_and_barbers_are_available(client):
     services = client.get("/services").json()
     barbers = client.get("/barbers").json()
     assert len(services) == 4
-    assert {barber["name"] for barber in barbers} == {"Rafael", "Diego", "Alecio"}
+    assert {barber["name"] for barber in barbers} == {"Rafael", "Caetano", "Alecio"}
 
 
-def test_api_requires_confirmation_and_prevents_duplicate_booking(client):
+def test_api_requires_confirmation_and_prevents_duplicate_booking(client, monkeypatch):
     today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
     slots = []
     for offset in (1, 2, 3):
@@ -30,11 +30,16 @@ def test_api_requires_confirmation_and_prevents_duplicate_booking(client):
             break
     assert slots
     slot = slots[0]
+    notifications = []
+    monkeypatch.setattr("barber_bot.api.notify_barber", lambda booking: notifications.append(booking))
     payload = {"customer_name": "Teste", "customer_phone": "16999990000", "service_id": 1, "barber_id": slot["barber_id"], "starts_at": slot["starts_at"]}
     assert client.post("/appointments", json={**payload, "confirmed": False}).status_code == 409
     created = client.post("/appointments", json={**payload, "confirmed": True})
     assert created.status_code == 200
+    assert len(notifications) == 1
+    assert notifications[0]["id"] == created.json()["id"]
     assert client.post("/appointments", json={**payload, "customer_phone": "16999990001", "confirmed": True}).status_code == 409
+    assert len(notifications) == 1
 
 
 def test_chat_reports_unavailable_without_api_key(client, monkeypatch):

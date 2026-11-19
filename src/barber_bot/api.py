@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, SecretStr
 from time import perf_counter
 from typing import Literal
 from barber_bot.db import initialize_database, connect
+from barber_bot.barber_telegram import notify_barber
 from barber_bot.schedule import (
     BookingAccessError, BookingError, availability, cancel_appointment, create_appointment,
     get_customer_appointment, list_barbers, list_services, reschedule_appointment, reschedule_options,
@@ -114,6 +115,7 @@ def book(payload: BookingIn):
                                  owner_channel="web" if payload.customer_token else None,
                                  owner_key=payload.customer_token.get_secret_value() if payload.customer_token else None)
     record_booking(payload.session_id or f"booking:{booking['id']}", booking["id"])
+    notify_barber(booking)
     return public_appointment(booking)
 
 

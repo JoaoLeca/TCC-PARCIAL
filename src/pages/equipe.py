@@ -463,6 +463,27 @@ def edit_information():
             st.cache_data.clear()
             st.session_state.staff_success = "Escala atualizada."
             st.rerun()
+
+        st.subheader("Notificações pelo Telegram")
+        telegram_barbers = call_api("GET", "staff/telegram/barbers")
+        telegram_barber = st.selectbox(
+            "Profissional para vincular ao Telegram", telegram_barbers,
+            format_func=lambda item: item["name"], key="telegram_barber_select",
+        )
+        with st.form(f"telegram_phone_{telegram_barber['id']}"):
+            telegram_phone = st.text_input(
+                "Telefone da conta do Telegram", value=telegram_barber["phone"],
+                max_chars=30, help="Use o mesmo número que o barbeiro compartilhará pelo bot.",
+            )
+            save_telegram_phone = st.form_submit_button("Salvar telefone do Telegram")
+        status = "Vinculado" if telegram_barber["linked"] else "Aguardando vínculo pelo bot"
+        st.caption(f"Conta: {status}. O barbeiro deve abrir o bot, usar /vincular e compartilhar o próprio contato.")
+        if save_telegram_phone:
+            call_api("PUT", f"staff/barbers/{telegram_barber['id']}/telegram-phone",
+                     data={"phone": telegram_phone})
+            st.cache_data.clear()
+            st.session_state.staff_success = "Telefone para notificações atualizado."
+            st.rerun()
     except StaffRequestError as exc:
         st.error(str(exc))
 

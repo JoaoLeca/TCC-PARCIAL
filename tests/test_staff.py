@@ -53,6 +53,7 @@ def test_staff_agenda_is_protected(tmp_path, monkeypatch):
             ("POST", "/appointments/1/reschedule"), ("POST", "/services"),
             ("POST", "/appointments/1/access-code"),
             ("PATCH", "/services/1"), ("PUT", "/shop"), ("PUT", "/barbers/1/working-days"),
+            ("PUT", "/barbers/1/telegram-phone"), ("GET", "/telegram/barbers"),
         ):
             assert api.request(method, f"/staff{endpoint}").status_code == 401
 
@@ -114,6 +115,20 @@ def test_owner_catalog_updates_are_visible_to_clients(staff_app):
     records = api.get("/staff/appointments", params={"day": day.isoformat()}, headers=owner).json()
     assert next(item for item in records if item["id"] == reservation["id"])["price"] == 50.0
     assert find_appointments("16999990001")[0]["price"] == 50.0
+
+
+def test_only_owner_can_configure_barber_telegram_contact(staff_app):
+    api = staff_app
+    barber = login(api, "rafael", "Senha exclusiva do Rafael")
+    owner = login(api, "dono", "Senha exclusiva do dono")
+    path = "/staff/barbers/2/telegram-phone"
+    assert api.put(path, json={"phone": "16981967722"}, headers=barber).status_code == 403
+    saved = api.put(path, json={"phone": "+55 16 98196-7722"}, headers=owner)
+    assert saved.status_code == 200
+    assert api.get("/staff/telegram/barbers", headers=owner).json()[1] == {
+        "id": 2, "name": "Caetano", "phone": "5516981967722", "linked": False,
+    }
+    assert "phone" not in api.get("/barbers").json()[1]
 
 
 def test_staff_reschedule_checks_availability_and_preserves_original_on_conflict(staff_app):

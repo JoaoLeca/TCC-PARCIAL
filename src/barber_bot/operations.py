@@ -70,6 +70,28 @@ def update_working_days(barber_id, days):
     return {"id": barber_id, "name": barber["name"], "working_days": days}
 
 
+def update_barber_telegram_phone(barber_id, phone):
+    digits = "".join(character for character in str(phone) if character.isdecimal())
+    if digits and not 10 <= len(digits) <= 15:
+        raise BookingError("Informe um telefone com DDD válido.")
+    if len(digits) in {10, 11}:
+        digits = "55" + digits
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        barber = conn.execute("SELECT id, name FROM barbers WHERE id=?", (barber_id,)).fetchone()
+        if not barber:
+            return None
+        if digits and conn.execute(
+            "SELECT 1 FROM barbers WHERE telegram_phone=? AND id<>?", (digits, barber_id)
+        ).fetchone():
+            raise BookingError("Esse telefone já está vinculado a outro profissional.")
+        conn.execute(
+            "UPDATE barbers SET telegram_phone=?, telegram_chat_id=NULL WHERE id=?",
+            (digits, barber_id),
+        )
+    return {"id": barber_id, "name": barber["name"], "telegram_linked": False}
+
+
 def list_blocks(day, barber_id=None):
     start = datetime.combine(day, time.min, tzinfo=TZ)
     end = datetime.combine(day, time.max, tzinfo=TZ) if day == date.max else start + timedelta(days=1)

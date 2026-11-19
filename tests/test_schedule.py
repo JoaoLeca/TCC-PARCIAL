@@ -115,7 +115,7 @@ def test_cancel_confirmed_booking(db):
 def test_barber_weekday_schedule_is_enforced(db):
     assert {barber["name"]: barber["working_days"] for barber in list_barbers(db)} == {
         "Rafael": [1, 2, 3, 4, 5],
-        "Diego": [0, 1, 3, 4, 5],
+        "Caetano": [0, 1, 3, 4, 5],
         "Alecio": [0, 1, 2, 3, 4],
     }
 

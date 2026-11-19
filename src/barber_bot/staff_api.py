@@ -6,8 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
+from barber_bot.barber_telegram import notify_barber
 from barber_bot.db import connect
-from barber_bot.operations import create_block, list_blocks, remove_block, update_shop, update_working_days
+from barber_bot.operations import (
+    create_block, list_blocks, remove_block, update_barber_telegram_phone, update_shop,
+    update_working_days,
+)
 from barber_bot.schedule import (
     TZ, BookingError, _parse_start, availability, cancel_appointment, create_appointment,
     replace_access_code, reschedule_appointment, reschedule_options,
@@ -87,6 +91,10 @@ class ShopUpdate(BaseModel):
 
 class WorkingDaysUpdate(BaseModel):
     working_days: list[Annotated[int, Field(ge=0, le=6)]] = Field(min_length=1, max_length=7)
+
+
+class BarberTelegramPhoneUpdate(BaseModel):
+    phone: str = Field(max_length=30)
 
 
 class SupportUpdate(BaseModel):
@@ -203,9 +211,11 @@ def staff_book(payload: CounterBookingIn, member: Staff):
     _scope(member, payload.barber_id)
     try:
         _check_schedule_day(_parse_start(payload.starts_at).date())
-        return create_appointment(payload.customer_name, payload.customer_phone, payload.service_id,
-                                  payload.barber_id, payload.starts_at, payload.confirmed, days_range=False,
-                                  expected_price=payload.expected_price, expected_duration=payload.expected_duration)
+        booking = create_appointment(payload.customer_name, payload.customer_phone, payload.service_id,
+                                     payload.barber_id, payload.starts_at, payload.confirmed, days_range=False,
+                                     expected_price=payload.expected_price, expected_duration=payload.expected_duration)
+        notify_barber(booking)
+        return booking
     except BookingError as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -305,6 +315,27 @@ def save_working_days(barber_id: int, payload: WorkingDaysUpdate, owner: Owner):
     if not barber:
         raise HTTPException(404, "Barbeiro não encontrado.")
     return barber
+
+
+@protected.put("/barbers/{barber_id}/telegram-phone")
+def save_barber_telegram_phone(barber_id: int, payload: BarberTelegramPhoneUpdate, owner: Owner):
+    try:
+        barber = update_barber_telegram_phone(barber_id, payload.phone)
+    except BookingError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not barber:
+        raise HTTPException(404, "Barbeiro não encontrado.")
+    return barber
+
+
+@protected.get("/telegram/barbers")
+def telegram_barber_settings(owner: Owner):
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, telegram_phone, telegram_chat_id FROM barbers ORDER BY id"
+        ).fetchall()
+    return [{"id": row["id"], "name": row["name"], "phone": row["telegram_phone"],
+             "linked": bool(row["telegram_chat_id"])} for row in rows]
 
 
 router.include_router(protected)
