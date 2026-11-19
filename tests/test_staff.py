@@ -72,6 +72,10 @@ def test_staff_routes_require_a_session_and_logout_revokes_it(staff_app):
 def test_barber_can_only_see_and_change_own_reservations(staff_app):
     api = staff_app
     day, own, other = seed_reservations()
+    from barber_bot.schedule import _issue_access_code
+    from barber_bot.db import connect
+    with connect() as conn:
+        own["access_code"] = _issue_access_code(conn, own["id"])
     barber = login(api, "rafael", "Senha exclusiva do Rafael")
     owner = login(api, "dono", "Senha exclusiva do dono")
     params = {"day": day.isoformat()}

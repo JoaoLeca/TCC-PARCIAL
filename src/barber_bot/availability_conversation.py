@@ -211,7 +211,7 @@ def availability_answer(messages):
 def basic_answer(messages):
     text = normalize_text(next((message["content"] for message in reversed(messages) if message["role"] == "user"), ""))
     if re.search(r"remarc|cancel|minha reserva|meu agendamento|meus horarios|codigo privado", text):
-        return "Use Meus horários no site, com o telefone da reserva e o código privado do comprovante, para consultar, remarcar ou cancelar. Guarde o código e digite-o apenas nessa área."
+        return "Use Meus horários ou escreva aqui que quer consultar, remarcar ou cancelar. Se a reserva foi feita em outro aparelho ou canal, confirme seu telefone pelo Telegram para recuperar o acesso automaticamente. Antes de qualquer alteração, será pedida sua confirmação."
     if re.search(r"servico|preco|quanto|valor|duracao", text):
         return "Serviços disponíveis\n\n" + "\n".join(f"- {service['name']} · {format_price(service['price'])} · {service['duration_minutes']} min" for service in list_services())
     shop = shop_profile()

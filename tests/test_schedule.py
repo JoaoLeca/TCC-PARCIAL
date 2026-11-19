@@ -43,11 +43,21 @@ def test_confirmation_retry_is_idempotent_and_payload_bound(db):
     first = create_appointment(*arguments, request_key="unique-request-key")
     retried = create_appointment(*arguments, request_key="unique-request-key")
     assert first["id"] == retried["id"]
-    assert first["access_code"] != retried["access_code"]
+    assert first["identification_code"] == retried["identification_code"] == "0000"
+    assert "access_code" not in first and "access_code" not in retried
     with connect(db) as conn:
         assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 1
     with pytest.raises(BookingError, match="outra escolha"):
         create_appointment("Bia", *arguments[1:], request_key="unique-request-key")
+
+
+def test_new_booking_identifies_phone_suffix_without_issuing_access_code(db):
+    _, slot = get_working_barber_date(db)
+    result = create_appointment("Ana", "+55 (16) 99999-0042", 1, slot["barber_id"], slot["starts_at"], True, db)
+    assert result["identification_code"] == "0042"
+    assert "access_code" not in result
+    with connect(db) as conn:
+        assert conn.execute("SELECT count(*) FROM appointment_access").fetchone()[0] == 0
 
 
 def test_concurrent_confirmation_creates_one_reservation(db):

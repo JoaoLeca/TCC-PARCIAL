@@ -6,7 +6,7 @@ import json
 import pytest
 
 from barber_bot import db, telegram_bot as bot
-from barber_bot.schedule import availability, cancel_appointment, create_appointment, get_customer_appointment
+from barber_bot.schedule import availability, cancel_appointment, create_appointment
 
 
 @pytest.fixture
@@ -37,6 +37,69 @@ def callback(data):
 def text(value):
     bot.handle_update({"message": {"chat": {"id": 123, "type": "private"},
                                   "from": {"id": 123}, "text": value}})
+
+
+def own_contact(phone="+5516999990042", user_id=123):
+    bot.handle_update({"message": {"chat": {"id": 123, "type": "private"}, "from": {"id": 123},
+                                  "contact": {"user_id": user_id, "phone_number": phone}}})
+
+
+def external_booking(phone="16999990042"):
+    _, slots = available_day()
+    slot = slots[0]
+    return create_appointment("Cliente do site", phone, 1, slot["barber_id"], slot["starts_at"], True)
+
+
+def test_text_request_recovers_website_reservation_with_own_contact_and_final_confirmation(telegram):
+    _, sent, _ = telegram
+    external_booking()
+    text("quero cancelar minha reserva")
+    assert "Compartilhar meu telefone" in sent[-1]["text"]
+    text("16999990042")
+    assert "número digitado não confirma" in sent[-1]["text"]
+    own_contact(user_id=456)
+    assert "seu próprio contato" in sent[-1]["text"]
+    own_contact()
+    assert "Telefone confirmado" in sent[-1]["text"] and "Confirma o cancelamento" in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+    text("sim")
+    assert "Cancelamento confirmado" in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "cancelled"
+
+
+def test_telegram_web_recovery_link_sends_code_only_to_matching_own_contact(telegram, monkeypatch):
+    import barber_bot.customer_recovery as recovery
+    from barber_bot.customer_access import list_owned_bookings
+    monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
+    monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)
+    _, sent, _ = telegram
+    record = external_booking()
+    owner = "new-browser-" + "x" * 40
+    challenge = recovery.start_recovery("16999990042", owner)
+    text("/start recover_" + challenge["challenge_id"])
+    own_contact("+5511988880042")
+    assert "não corresponde" in sent[-1]["text"] and "123456" not in sent[-1]["text"]
+    own_contact()
+    assert "123456" in sent[-1]["text"]
+    assert not list_owned_bookings("web", owner)
+    recovery.verify_recovery(challenge["challenge_id"], "123456", owner)
+    assert [row["id"] for row in list_owned_bookings("web", owner)] == [record["id"]]
+    with db.connect() as conn:
+        assert "123456" not in str([tuple(row) for row in conn.execute("SELECT * FROM telegram_sessions")])
+        assert "123456" not in str([tuple(row) for row in conn.execute("SELECT user_message FROM interaction_logs")])
+
+
+def test_unknown_phone_contact_does_not_disclose_or_change_another_reservation(telegram):
+    _, sent, _ = telegram
+    external_booking()
+    text("quero ver meu agendamento")
+    own_contact("+5511988880042")
+    assert "Não encontrei reservas ativas para o telefone confirmado" in sent[-1]["text"]
+    assert "Cliente do site" not in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
 
 
 def button(sent, action):
@@ -138,11 +201,13 @@ def test_failed_receipt_can_be_retried_without_creating_a_second_booking(telegra
     fail["receipt"] = False
     callback(confirm)
     receipt = next(item["text"] for item in reversed(sent) if "Agendamento confirmado" in item["text"])
-    code = receipt.split("pelo site: ")[1].splitlines()[0]
-    assert get_customer_appointment("16999990000", code)["status"] == "confirmed"
+    assert "Identificação da reserva" not in receipt and "Protocolo: #1" in receipt
+    assert "Para remarcar ou cancelar, escreva seu pedido nesta conversa." in receipt
+    assert "BI-" not in receipt
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM appointments").fetchone()[0] == 1
-        assert code not in conn.execute("SELECT state_json FROM telegram_sessions").fetchone()[0]
+        assert conn.execute("SELECT COUNT(*) FROM appointment_access").fetchone()[0] == 0
+        assert "customer_phone" not in conn.execute("SELECT state_json FROM telegram_sessions").fetchone()[0]
     assert bot._load_state("123")["receipt_pending"] is False
 
 
@@ -419,3 +484,146 @@ def test_support_status_command_is_registered_and_described_in_help(telegram, mo
     monkeypatch.setattr(bot, "telegram_call", api)
     bot.main()
     assert any(command["command"] == "atendimento" for command in registered)
+
+
+def test_receipt_repeats_protocol_without_phone_suffix_or_private_code(telegram):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+    text("/comprovante")
+    text("/comprovante")
+    assert "Identificação da reserva" not in sent[-1]["text"] and "Protocolo: #1" in sent[-1]["text"]
+    assert "BI-" not in "\n".join(item["text"] for item in sent)
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM appointment_access").fetchone()[0] == 0
+        owner = conn.execute("SELECT channel,owner_hash FROM booking_owners").fetchone()
+    assert owner["channel"] == "telegram"
+    assert owner["owner_hash"] != "123"
+
+
+@pytest.mark.parametrize("confirmation,expected", [("sim", "cancelled"), ("não", "confirmed")])
+def test_natural_cancellation_requires_final_text_confirmation(telegram, monkeypatch, confirmation, expected):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+
+    def unexpected_model(*args, **kwargs):
+        pytest.fail("Reservation management must not call the model")
+
+    monkeypatch.setattr(bot, "run_agent", unexpected_model)
+    text("quero cancelar minha reserva")
+    assert "Confirma o cancelamento?" in sent[-1]["text"]
+    assert "reply_markup" not in sent[-1]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+    text(confirmation)
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == expected
+    assert "reply_markup" not in sent[-1]
+
+
+@pytest.mark.parametrize("confirmation", ["sim", "não"])
+def test_natural_reschedule_keeps_original_until_final_confirmation(telegram, monkeypatch, confirmation):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+    with db.connect() as conn:
+        original = conn.execute("SELECT starts_at FROM appointments").fetchone()[0]
+    day = datetime.fromisoformat(original).date()
+
+    def unexpected_model(*args, **kwargs):
+        pytest.fail("Reservation management must not call the model")
+
+    monkeypatch.setattr(bot, "run_agent", unexpected_model)
+    # A leftover guided booking menu must not swallow the textual management.
+    text("/agendar")
+    text(f"quero remarcar minha reserva para {day:%d/%m/%Y}")
+    assert "opções para remarcar" in sent[-1]["text"]
+    assert "reply_markup" not in sent[-1]
+    text("1")
+    assert "Confirma a remarcação?" in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT starts_at FROM appointments").fetchone()[0] == original
+    text(confirmation)
+    with db.connect() as conn:
+        updated = conn.execute("SELECT starts_at,status FROM appointments").fetchone()
+    assert (updated["starts_at"] != original) is (confirmation == "sim")
+    assert updated["status"] == "confirmed"
+    assert "reply_markup" not in sent[-1]
+
+
+def test_another_chat_cannot_manage_or_recover_owned_receipt_with_same_phone(telegram, monkeypatch):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+
+    def unexpected_model(*args, **kwargs):
+        pytest.fail("Reservation management must not call the model")
+
+    monkeypatch.setattr(bot, "run_agent", unexpected_model)
+    bot.handle_update({"message": {"chat": {"id": 456, "type": "private"},
+                                  "from": {"id": 123},
+                                  "text": "quero cancelar reserva #1, meu telefone é 16999990000, final 0000"}})
+    assert "Compartilhar meu telefone" in sent[-1]["text"]
+    assert "Ana" not in sent[-1]["text"]
+    bot._save_state("456", {"step": "completed", "appointment_id": 1})
+    bot.handle_update({"message": {"chat": {"id": 456, "type": "private"}, "text": "/comprovante"}})
+    assert "Não encontrei o comprovante desta conversa" in sent[-1]["text"]
+    assert "Identificação da reserva" not in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+        logs = conn.execute("SELECT user_message FROM interaction_logs").fetchall()
+    assert all("16999990000" not in item["user_message"] for item in logs)
+
+
+def test_cancelar_command_discards_pending_management_without_cancelling_booking(telegram):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+    text("quero cancelar minha reserva")
+    assert "Confirma o cancelamento?" in sent[-1]["text"]
+    text("/cancelar")
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+        assert conn.execute("SELECT COUNT(*) FROM booking_conversations").fetchone()[0] == 0
+
+
+def test_legacy_ownerless_receipt_uses_persisted_chat_without_issuing_code(telegram):
+    _, sent, _ = telegram
+    _, slots = available_day()
+    slot = slots[0]
+    booking = create_appointment("Legado", "16999990007", 1, slot["barber_id"], slot["starts_at"], True)
+    bot._save_state("123", {"step": "completed", "appointment_id": booking["id"]})
+    text("/comprovante")
+    assert "Identificação da reserva" not in sent[-1]["text"]
+    assert f"Protocolo: #{booking['id']}" in sent[-1]["text"]
+    assert "BI-" not in sent[-1]["text"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM appointment_access").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("new_flow", ["/agendar", "/horarios", "/start", "/help", "/atendente",
+                                     "📅 Agendar", "consultar horários"])
+def test_starting_another_flow_discards_pending_management(telegram, monkeypatch, new_flow):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+    text("quero cancelar minha reserva")
+    assert "Confirma o cancelamento?" in sent[-1]["text"]
+    monkeypatch.setattr(bot, "run_agent", lambda *args, **kwargs: {"content": "Como posso ajudar?"})
+    text(new_flow)
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM booking_conversations").fetchone()[0] == 0
+    text("sim")
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
+
+
+def test_resuming_guided_menu_discards_pending_management(telegram):
+    _, sent, _ = telegram
+    callback(confirm_button(sent))
+    text("/agendar")
+    service_button = button(sent, "service:1")
+    text("quero cancelar minha reserva")
+    assert "Confirma o cancelamento?" in sent[-1]["text"]
+    callback(service_button)
+    assert bot._load_state("123")["step"] == "date"
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM booking_conversations").fetchone()[0] == 0
+    text("sim")
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
