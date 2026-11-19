@@ -3,7 +3,7 @@ from barber_bot.config import OPENAI_API_KEY, OPENAI_MODEL
 
 FAQ = {
     "preco": "Corte: R$ 50; Cabelo + Barba: R$ 80; Cabelo + Barba + Sobrancelha: R$ 100; Pintar o Cabelo: R$ 200.",
-    "horario": "Todos os dias, das 08:00 às 12:00 e das 13:30 às 20:00.",
+    "horario": "De segunda a sábado, das 08:00 às 12:00 e das 13:30 às 20:00. Fechado aos domingos.",
     "pagamento": "Aceitamos dinheiro, Pix e cartão.",
     "cancelamento": "O cancelamento pode ser feito até 3 horas antes do horário marcado.",
     "atraso": "A tolerância para atraso é de 15 minutos.",

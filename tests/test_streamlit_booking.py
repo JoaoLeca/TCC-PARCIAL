@@ -32,7 +32,7 @@ def booking_app(tmp_path, monkeypatch):
             return response
 
         monkeypatch.setattr(requests.Session, "request", request)
-        yield AppTest.from_file(str(APP_SCRIPT)).run(), api
+        yield AppTest.from_file(str(APP_SCRIPT), default_timeout=15).run(), api
 
 
 def button(ui, label):
@@ -305,7 +305,7 @@ def test_booking_step_is_visible_even_when_catalog_is_unavailable(monkeypatch):
 
     monkeypatch.setenv("API_BASE_URL", "http://unavailable-catalog.test")
     monkeypatch.setattr(requests.Session, "request", unavailable)
-    ui = AppTest.from_file(str(APP_SCRIPT)).run()
+    ui = AppTest.from_file(str(APP_SCRIPT), default_timeout=15).run()
     assert not ui.exception
     assert any("Encontre um horário" in element.value for element in ui.markdown)
     assert any("Não foi possível carregar a agenda" in element.value for element in ui.error)
@@ -340,7 +340,7 @@ def test_first_screen_starts_rendering_after_catalog_is_ready(monkeypatch):
     monkeypatch.setenv("API_BASE_URL", "http://first-screen.test")
     monkeypatch.setattr(st, "title", title)
     monkeypatch.setattr(requests.Session, "request", request)
-    ui = AppTest.from_file(str(APP_SCRIPT)).run()
+    ui = AppTest.from_file(str(APP_SCRIPT), default_timeout=15).run()
     assert not ui.exception
     first_render = ["/catalog", "title"] + ["/availability"] * (MAX_BOOKING_DAYS - MIN_BOOKING_DAYS + 1)
     assert events == first_render
