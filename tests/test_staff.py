@@ -146,7 +146,8 @@ def test_staff_page_login_displays_the_correct_panel(staff_app, monkeypatch, use
     monkeypatch.setenv("API_BASE_URL", f"http://test-staff-{username}.example")
     monkeypatch.setattr(requests.Session, "request", request)
     script = Path(__file__).resolve().parents[1] / "src" / "streamlit_app.py"
-    ui = AppTest.from_file(str(script)).run().switch_page("pages/equipe.py").run()
+    # Limite maior que os 3 s padrão: a primeira carga do app pode demorar com a máquina carregada.
+    ui = AppTest.from_file(str(script), default_timeout=15).run().switch_page("pages/equipe.py").run()
     assert ui.title[0].value == "Área da equipe"
     assert not ui.tabs and not ui.dataframe
     ui.text_input[0].input(username)

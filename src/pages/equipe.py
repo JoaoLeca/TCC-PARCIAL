@@ -129,7 +129,7 @@ def change_reservation(record, now):
         if not slots:
             st.info("Sem horários disponíveis com esse profissional. Escolha outro dia.")
             return
-        slot = st.selectbox("Novo horário", slots, index=None, key=slot_key,
+        slot = st.selectbox("Novo horário", slots, index=None, key=slot_key, placeholder="Escolha um horário",
                             format_func=lambda item: f"{appointment_time(item['starts_at']):%Hh%M}")
         if st.button("Confirmar remarcação", type="primary", disabled=slot is None):
             confirm_change(appointment_id, "reschedule", {"new_starts_at": slot["starts_at"]})
@@ -186,7 +186,7 @@ def agenda(member):
         "Cliente": record["customer_name"], "Profissional": record["barber"],
         "Serviço": record["service"], "Situação": STATUS[record["status"]],
     } for record in records], hide_index=True)
-    record = st.selectbox("Abra uma reserva para gerenciar", records, index=None,
+    record = st.selectbox("Abra uma reserva para gerenciar", records, index=None, placeholder="Escolha uma reserva",
                           format_func=lambda item: f"#{item['id']} · {appointment_time(item['starts_at']):%Hh%M} · {item['customer_name']}")
     if record is not None:
         change_reservation(record, now)
@@ -245,7 +245,7 @@ def counter_booking(member):
             st.info("Nenhum horário disponível para a seleção. Tente outro dia ou serviço.")
             return
         slot = st.selectbox("Horário da reserva", slots, index=None, key="staff_counter_slot",
-                            format_func=lambda item: f"{appointment_time(item['starts_at']):%Hh%M}")
+                            placeholder="Escolha um horário", format_func=lambda item: f"{appointment_time(item['starts_at']):%Hh%M}")
         if slot is None:
             return
         with st.form("staff_counter_details"):
@@ -316,7 +316,7 @@ def manage_blocks(member):
         if not blocks:
             st.info("Nenhum bloqueio para este profissional na data escolhida.")
             return
-        block = st.selectbox("Selecione um bloqueio", blocks, index=None,
+        block = st.selectbox("Selecione um bloqueio", blocks, index=None, placeholder="Escolha um bloqueio",
                              format_func=lambda item: f"{item['reason']} · {label_time(item['starts_at'])} a {label_time(item['ends_at'])}")
         if block is not None:
             confirm = st.checkbox("Confirmo a liberação deste período", key=f"staff_confirm_unblock_{block['id']}")
@@ -374,7 +374,7 @@ def support_queue(member):
         } for record in records], hide_index=True)
         by_id = {record["id"]: record for record in records}
         ticket_id = st.selectbox("Abrir atendimento", list(by_id), index=None, key="staff_support_ticket",
-                                 format_func=lambda value: f"#{value} · {by_id[value]['reason'][:70]}")
+                                 placeholder="Escolha um atendimento", format_func=lambda value: f"#{value} · {by_id[value]['reason'][:70]}")
         if ticket_id is None:
             return
         ticket = by_id[ticket_id]
@@ -463,7 +463,7 @@ def edit_information():
         barber = st.selectbox("Profissional da escala", barbers, format_func=lambda item: item["name"])
         with st.form(f"working_days_{barber['id']}"):
             days = st.multiselect("Dias de atendimento", shop["open_days"], default=barber["working_days"],
-                                  format_func=WEEKDAYS.__getitem__)
+                                  placeholder="Escolha os dias", format_func=WEEKDAYS.__getitem__)
             save_days = st.form_submit_button("Salvar escala")
         if save_days:
             if not days:
