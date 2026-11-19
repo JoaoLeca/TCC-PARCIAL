@@ -226,3 +226,46 @@ def test_exact_hour_outside_real_grid_does_not_fabricate_slots(search_day):
     assert answer["slots"] == []
     with db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 0
+
+
+def _after_availability(day, latest):
+    return [
+        {"role": "user", "content": f"Tem horário para corte em {day.isoformat()}?"},
+        {"role": "assistant", "content": "Encontrei estas opções disponíveis."},
+        {"role": "user", "content": latest},
+    ]
+
+
+@pytest.mark.parametrize("question", [
+    "Qual a previsão do tempo para amanhã?",
+    "Qual a capital da França?",
+    "Me conta uma piada sobre sexta-feira",
+])
+def test_unrelated_question_after_availability_is_not_treated_as_booking(search_day, monkeypatch, question):
+    from barber_bot import assistant
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
+    result = assistant.run_agent(_after_availability(search_day, question), session_id="context-test")
+    assert result["outcome"] == "unavailable"
+    assert not result.get("slots")
+    assert "Encontrei" not in result["content"]
+
+
+def test_hours_question_after_availability_gets_shop_hours(search_day, monkeypatch):
+    from barber_bot import assistant
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
+    result = assistant.run_agent(_after_availability(search_day, "Qual o horário de funcionamento?"), session_id="hours-test")
+    assert "segunda a sábado" in result["content"]
+    assert not result.get("slots")
+
+
+@pytest.mark.parametrize("follow_up", ["amanhã", "e na sexta?", "pode ser sábado", "com o Diego", "à tarde",
+                                       "depois das 15h", "sem preferência", "tem vaga mais cedo?"])
+def test_short_follow_ups_still_continue_the_search(conversation_db, follow_up):
+    from barber_bot.availability_conversation import availability_answer
+    answer = availability_answer([
+        {"role": "user", "content": "Quero agendar corte"},
+        {"role": "assistant", "content": "Para qual dia você quer Corte de Cabelo?"},
+        {"role": "user", "content": follow_up},
+    ])
+    assert answer is not None
+    assert answer["intent"] == "consultar_disponibilidade"
