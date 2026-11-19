@@ -103,6 +103,44 @@ def likert_metrics(rows: list[dict]) -> dict:
     return {"n": len(values), "mean": sum(values) / len(values) if values else None, "distribution": dict(sorted(Counter(values).items()))}
 
 
+TASK_RESULTS = ("independente", "com_ajuda", "nao_concluida")
+
+
+def _clock_seconds(value: str) -> int | None:
+    parts = (value or "").strip().split(":")
+    if len(parts) not in (2, 3) or not all(part.isdigit() for part in parts):
+        return None
+    hours, minutes, seconds = (int(part) for part in (parts + ["0"])[:3])
+    return hours * 3600 + minutes * 60 + seconds if minutes < 60 and seconds < 60 else None
+
+
+def task_metrics(rows: list[dict]) -> dict:
+    """Resume a ficha de observação; linhas sem resultado válido não entram nos denominadores."""
+    tasks: dict[str, dict] = {}
+    pending = 0
+    for row in rows:
+        task, result = (row.get("tarefa_id") or "").strip(), (row.get("resultado") or "").strip()
+        if not task:
+            continue
+        if result not in TASK_RESULTS:
+            pending += 1
+            continue
+        item = tasks.setdefault(task, {"n": 0, **{key: 0 for key in TASK_RESULTS}, "durations": []})
+        item["n"] += 1
+        item[result] += 1
+        start, end = _clock_seconds(row.get("inicio", "")), _clock_seconds(row.get("fim", ""))
+        if start is not None and end is not None and end >= start:
+            item["durations"].append(end - start)
+    summary = {}
+    for task, item in sorted(tasks.items()):
+        durations = sorted(item.pop("durations"))
+        summary[task] = {**item, "taxa_independente": item["independente"] / item["n"],
+                         "mediana_segundos": median(durations) if durations else None, "n_tempos": len(durations)}
+    participants = {row.get("participante_id") for row in rows
+                    if (row.get("resultado") or "").strip() in TASK_RESULTS and row.get("participante_id")}
+    return {"participantes": len(participants), "linhas_sem_resultado": pending, "tarefas": summary}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Calcula as métricas de avaliação do protótipo.")
     parser.add_argument("--intents", help="CSV com true_intent e predicted_intent")
@@ -110,7 +148,9 @@ def main():
     parser.add_argument("--latency", help="CSV com response_ms")
     parser.add_argument("--operations", help="CSV exportado com outcomes, canais e reservas concluídas")
     parser.add_argument("--likert", help="CSV anônimo com rating de 1 a 5")
+    parser.add_argument("--tasks", help="Ficha de observação preenchida (eval/participantes/ficha_observacao.csv)")
     args = parser.parse_args()
+    if args.tasks: print("Tarefas:", task_metrics(read_csv(args.tasks)))
     if args.intents: print("Intenções:", intent_metrics(read_csv(args.intents)))
     if args.fcr: print("FCR:", fcr_metrics(read_csv(args.fcr)))
     if args.latency:

@@ -131,3 +131,32 @@ def test_export_omits_messages_hashes_sessions_and_deduplicates_booking_events(t
     assert rows[0]["channel"] == "telegram"
     assert rows[2]["channel"] == "web"
     assert metrics.automation_metrics(rows)["completed_bookings"] == 2
+
+
+def test_task_metrics_count_only_observed_results_and_valid_times():
+    rows = [
+        {"participante_id": "P01", "tarefa_id": "T01", "resultado": "independente", "inicio": "10:00:00", "fim": "10:01:30"},
+        {"participante_id": "P02", "tarefa_id": "T01", "resultado": "com_ajuda", "inicio": "11:00", "fim": "11:03"},
+        {"participante_id": "P03", "tarefa_id": "T01", "resultado": "nao_concluida", "inicio": "", "fim": ""},
+        {"participante_id": "P01", "tarefa_id": "T02", "resultado": "independente", "inicio": "10:05:00", "fim": "10:04:00"},
+        {"participante_id": "P04", "tarefa_id": "T02", "resultado": "", "inicio": "", "fim": ""},
+    ]
+    result = metrics.task_metrics(rows)
+    assert result["participantes"] == 3
+    assert result["linhas_sem_resultado"] == 1
+    t01 = result["tarefas"]["T01"]
+    assert (t01["n"], t01["independente"], t01["com_ajuda"], t01["nao_concluida"]) == (3, 1, 1, 1)
+    assert t01["taxa_independente"] == 1 / 3
+    assert t01["mediana_segundos"] == 135 and t01["n_tempos"] == 2
+    assert result["tarefas"]["T02"]["mediana_segundos"] is None
+
+
+def test_blank_observation_sheet_reports_no_results():
+    import csv
+    from pathlib import Path
+    sheet = Path(__file__).resolve().parents[1] / "eval" / "participantes" / "ficha_observacao.csv"
+    with sheet.open(encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    result = metrics.task_metrics(rows)
+    assert result["tarefas"] == {} and result["participantes"] == 0
+    assert result["linhas_sem_resultado"] == len(rows) == 10

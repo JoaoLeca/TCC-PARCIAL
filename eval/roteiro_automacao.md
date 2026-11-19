@@ -76,6 +76,8 @@ Somente cenários com os três campos de consenso preenchidos com `0` ou `1` ent
 uv run python eval/metrics.py --fcr eval/fcr_execucao_preenchido.csv
 ```
 
+O kit em [`eval/participantes/`](participantes/README.md) traz o modelo de termo de consentimento, as tarefas com dados fictícios e ordens alternadas, o protocolo do observador e a ficha de registro, que pode ser resumida com `eval/metrics.py --tasks`.
+
 Na avaliação de uso, obtenha consentimento e entregue aos participantes tarefas baseadas nesses 30 cenários, com os dados fictícios necessários, sem explicar quais botões usar ou como formular a resposta. Inclua consultar horário com limite preciso, escolher sugestão e revisar a reserva antes de confirmar, corrigir uma preferência e solicitar retorno humano. Distribua tarefas e ordem entre participantes e registre quais foram realmente aplicadas. As 150 frases são um conjunto de avaliação de intenções; não equivalem a 150 usuários nem substituem conversas observadas.
 
 Observe sem orientar; se houver ajuda, registre o momento e o motivo. Para cada tarefa, anote conclusão independente/com ajuda/não concluída, erros observados, tempo do início à conclusão ou interrupção e dados/perguntas repetidos desnecessariamente. Confira o efeito no banco e peça ao participante que explique o próximo passo do retorno humano para verificar se compreendeu o contato por telefone. Registre falhas e comentários com identificador local, sem contatos pessoais. Apresente quantidade de participantes e tarefas, denominadores, distribuição dos tempos e resultados observados, sem criar metas percentuais ou preencher resultados ainda não coletados. Ensaios sintéticos do desenvolvedor continuam separados desta avaliação com pessoas.
