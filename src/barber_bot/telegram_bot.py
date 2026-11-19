@@ -140,6 +140,8 @@ def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 def _flow_keyboard(chat_id: str, state: dict[str, Any], rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     # Cada menu tem seu token para impedir escolhas de menus antigos.
+    if state.get("step") in {"service", "date", "barber", "slot", "no_slots"}:
+        rows = [*rows, [("✖️ Cancelar agendamento", "abort")]]
     state["callback_token"] = token_hex(6)
     _save_state(chat_id, state)
     return _keyboard([[(label, f"{state['callback_token']}:{action}") for label, action in row] for row in rows])
@@ -157,7 +159,7 @@ def send_message(chat_id: str, text: str, reply_markup: dict[str, Any] | None = 
 def _main_keyboard() -> dict[str, Any]:
     return {
         "keyboard": [[{"text": "📅 Agendar"}, {"text": "🕒 Consultar horários"}],
-                     [{"text": "🗓 Minha agenda"}]],
+                     [{"text": "💬 Conversar"}, {"text": "🙋 Falar com a equipe"}]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -204,8 +206,10 @@ def _send_dates(chat_id: str, state: dict[str, Any]) -> None:
         return
     state["step"] = "date"
     _save_state(chat_id, state)
-    rows = [[item] for item in options]
-    send_message(chat_id, "Para qual dia? Escolha uma das datas disponíveis:", _flow_keyboard(chat_id, state, rows))
+    rows = [options[index:index + 2] for index in range(0, len(options), 2)]
+    service_name = state.get("service_name", "serviço escolhido")
+    send_message(chat_id, f"2/4 · DATA\nServiço: {service_name}\n\nEscolha uma das datas disponíveis:",
+                 _flow_keyboard(chat_id, state, rows))
 
 
 def _start_flow(chat_id: str, mode: str) -> None:
@@ -214,21 +218,25 @@ def _start_flow(chat_id: str, mode: str) -> None:
              **_receipt_fields(_load_state(chat_id))}
     _save_state(chat_id, state)
     services = list_services()
-    rows = [[(f"{s['name']} · {format_price(s['price'])}", f"service:{s['id']}")] for s in services]
+    rows = [[(f"✂️ {s['name']} · {format_price(s['price'])} · {s['duration_minutes']} min", f"service:{s['id']}")] for s in services]
     if not rows:
         _clear_state(chat_id)
         send_message(chat_id, "Ainda não há serviços cadastrados.")
         return
-    intro = "Vamos agendar. Primeiro, escolha o serviço:" if mode == "booking" else "Para consultar horários, escolha o serviço:"
+    intro = ("1/4 · SERVIÇO\n\nEscolha o serviço que deseja agendar:" if mode == "booking"
+             else "1/4 · SERVIÇO\n\nEscolha o serviço para consultar horários:")
     send_message(chat_id, intro, _flow_keyboard(chat_id, state, rows))
 
 
 def _show_barbers(chat_id: str, state: dict[str, Any]) -> None:
     state["step"] = "barber"
     _save_state(chat_id, state)
-    rows = [[(barber["name"], f"barber:{barber['id']}")] for barber in list_barbers()]
-    rows.append([("Qualquer profissional", "barber:0")])
-    send_message(chat_id, "Tem preferência por profissional?", _flow_keyboard(chat_id, state, rows))
+    barbers = list_barbers()
+    rows = [[(f"💈 {barber['name']}", f"barber:{barber['id']}")] for barber in barbers]
+    rows.append([("Sem preferência", "barber:0")])
+    day = datetime.fromisoformat(state["date"]).strftime("%d/%m/%Y")
+    send_message(chat_id, f"3/4 · PROFISSIONAL\nData: {day}\n\nEscolha com quem deseja ser atendido:",
+                 _flow_keyboard(chat_id, state, rows))
 
 
 def _slot_text(slot: dict[str, Any]) -> str:
@@ -255,10 +263,15 @@ def _show_slots(chat_id: str, state: dict[str, Any], offset: int = 0) -> None:
     page = slots[offset:offset + SLOTS_PER_PAGE]
     state["slot_choices"] = {str(index): slot for index, slot in enumerate(page, start=offset)}
     rows = []
+    slot_row: list[tuple[str, str]] = []
     for index, slot in enumerate(page, start=offset):
         label = _slot_text(slot)
-        action = "Ver horário" if state["mode"] == "availability" else "Escolher"
-        rows.append([(f"{label} · {action}", f"slot:{index}")])
+        slot_row.append((f"🕒 {label}", f"slot:{index}"))
+        if len(slot_row) == 2:
+            rows.append(slot_row)
+            slot_row = []
+    if slot_row:
+        rows.append(slot_row)
     if offset + SLOTS_PER_PAGE < len(slots):
         rows.append([("Mais horários", "more")])
     rows.append([("Outro profissional", "change_barber"), ("Outro dia", "change_day")])
@@ -266,10 +279,11 @@ def _show_slots(chat_id: str, state: dict[str, Any], offset: int = 0) -> None:
     state["slots_count"] = len(slots)
     _save_state(chat_id, state)
     date_label = datetime.combine(day, datetime.min.time()).strftime("%d/%m/%Y")
-    if state["mode"] == "availability":
-        intro = f"Horários livres para {service['name'] if service else 'o serviço'} em {date_label}:\nToque em um horário se quiser iniciar a reserva."
-    else:
-        intro = f"Escolha um horário para {service['name'] if service else 'o serviço'} em {date_label}:"
+    barber_label = next((item["name"] for item in list_barbers() if item["id"] == state.get("barber_id")), "sem preferência")
+    title = "HORÁRIOS DISPONÍVEIS" if state["mode"] == "availability" else "4/4 · HORÁRIO"
+    action = "Toque em um horário para continuar com a reserva." if state["mode"] == "availability" else "Escolha o horário desejado:"
+    intro = (f"{title}\n{service['name'] if service else 'Serviço'} · {date_label}\n"
+             f"Profissional: {barber_label}\n\n{action}")
     send_message(chat_id, intro, _flow_keyboard(chat_id, state, rows))
 
 
@@ -277,12 +291,16 @@ def _ask_name(chat_id: str, state: dict[str, Any], slot: dict[str, Any]) -> None
     state.update({"step": "name", "starts_at": slot["starts_at"], "ends_at": slot["ends_at"],
                   "barber_id": slot["barber_id"], "barber_name": slot["barber"]})
     _save_state(chat_id, state)
-    send_message(chat_id, "Qual nome devo colocar na reserva? Envie /cancelar para interromper.")
+    start = datetime.fromisoformat(slot["starts_at"]).astimezone(TZ)
+    send_message(chat_id, f"✅ Horário selecionado\n{state['service_name']} com {slot['barber']}\n"
+                 f"{start:%d/%m/%Y às %H:%M}\n\nQual nome devo colocar na reserva?\n"
+                 "Para interromper, envie /cancelar.")
 
 
 def _phone_keyboard() -> dict[str, Any]:
     return {
-        "keyboard": [[{"text": "Compartilhar meu telefone", "request_contact": True}]],
+        "keyboard": [[{"text": "📱 Compartilhar meu telefone", "request_contact": True}],
+                     [{"text": "✖️ Cancelar"}]],
         "resize_keyboard": True,
         "one_time_keyboard": True,
     }
@@ -315,7 +333,7 @@ def _show_confirmation(chat_id: str, state: dict[str, Any]) -> None:
     _save_state(chat_id, state)
     phone_last_four = re.sub(r"\D", "", state["customer_phone"])[-4:]
     summary = (
-        "Confira os dados antes de confirmar:\n"
+        "🧾 REVISE SEU AGENDAMENTO\n\n"
         f"Serviço: {service['name']} ({service['duration_minutes']} min)\n"
         f"Profissional: {state['barber_name']}\n"
         f"Data: {start:%d/%m/%Y às %H:%M}\n"
@@ -323,8 +341,7 @@ def _show_confirmation(chat_id: str, state: dict[str, Any]) -> None:
         f"Nome: {state['customer_name']}\n"
         f"Telefone: final {phone_last_four}"
     )
-    send_message(chat_id, "Contato registrado.", {"remove_keyboard": True})
-    send_message(chat_id, summary, _flow_keyboard(chat_id, state, [[ ("✅ Confirmar agendamento", "confirm"), ("Interromper", "abort") ]]))
+    send_message(chat_id, summary, _flow_keyboard(chat_id, state, [[ ("✅ Confirmar", "confirm"), ("✖️ Cancelar", "abort") ]]))
 
 
 def _book(chat_id: str, state: dict[str, Any]) -> None:
@@ -386,11 +403,13 @@ def _deliver_receipt(chat_id: str, state: dict[str, Any]) -> None:
     send_message(
         chat_id,
         f"{heading}\n\n"
-        f"Protocolo: #{booking['id']}\n"
-        f"{booking['service']} com {booking['barber']}\n"
-        f"{start:%d/%m/%Y às %H:%M} · {format_price(booking['price'])}\n\n"
-        "Para remarcar ou cancelar, escreva seu pedido nesta conversa.\n"
-        "Para reenviar o comprovante, use /comprovante. Para iniciar outra reserva, envie /agendar.",
+        f"🧾 Protocolo: #{booking['id']}\n"
+        f"✂️ {booking['service']}\n"
+        f"💈 {booking['barber']}\n"
+        f"📅 {start:%d/%m/%Y} às {start:%H:%M}\n"
+        f"💰 {format_price(booking['price'])}\n\n"
+        "Para remarcar ou cancelar, escreva seu pedido aqui.\n"
+        "Use /comprovante para receber estes dados novamente.",
         _main_keyboard(),
     )
     state["receipt_pending"] = False
@@ -601,23 +620,28 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         _clear_state(chat_id)
         send_message(
             chat_id,
-            "Olá! Sou o assistente da Barbearia Imperial. Posso responder dúvidas, consultar horários e fazer reservas.\n\n"
-            "Use /horarios para consultar disponibilidade, /agendar para reservar ou /cancelar para interromper um fluxo. "
-            "Use /atendente para solicitar a equipe e /atendimento para acompanhar seu protocolo. "
-            "Barbeiros: use /vincular para associar sua conta e /minhaagenda para ver seus agendamentos. "
-            "Para proteger seus dados, o agendamento deve ser feito nesta conversa privada.",
+            "👋 Olá! Sou o assistente da Barbearia Imperial.\n\n"
+            "Escolha uma opção no menu abaixo ou escreva sua dúvida.\n"
+            "• Agendar: escolha serviço, data, profissional e horário.\n"
+            "• Consultar horários: veja as vagas antes de reservar.\n"
+            "• Conversar: tire dúvidas sobre a barbearia.\n\n"
+            "Para interromper um agendamento, toque em Cancelar ou envie /cancelar. Atendimento de reservas somente no privado.",
             _main_keyboard(),
         )
         return
     if command in {"/cancelar", "/cancel"} or (
-        raw_text.casefold() == "cancelar" and state.get("step") in {"name", "phone", "support_name", "support_phone"}
+        raw_text.casefold() in {"cancelar", "✖️ cancelar"} and state.get("step") in {"name", "phone", "support_name", "support_phone", "verify_reservations"}
     ):
         _discard_management_proposal(chat_id)
         _clear_state(chat_id)
         send_message(chat_id, "Tudo bem, interrompi o fluxo. Envie /agendar ou /horarios quando quiser.", _main_keyboard())
         return
-    if command == "/atendente":
+    if command == "/atendente" or raw_text.casefold() == "🙋 falar com a equipe":
         _begin_support(chat_id, state)
+        return
+    if raw_text.casefold() == "💬 conversar" and state.get("step") in {None, "chat", "completed"}:
+        _save_state(chat_id, {"step": "chat", "history": state.get("history", []), **_receipt_fields(state)})
+        send_message(chat_id, "💬 Pode escrever sua dúvida. Também posso ajudar com serviços, preços, horários e políticas.", _main_keyboard())
         return
     if command == "/agendar" or raw_text.casefold() in {"📅 agendar", "agendar", "quero agendar"}:
         _start_flow(chat_id, "booking")
@@ -627,6 +651,19 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
         return
 
     step = state.get("step")
+    # Pedidos explícitos para criar uma reserva devem sempre passar pelo fluxo
+    # guiado, que valida serviço, barbeiro e vaga juntos antes de confirmar.
+    # Não deixe o modelo interpretar um horário com outro profissional.
+    booking_request = re.match(
+        r"^(?:por favor,?\s*)?(?:agende|agenda|marque|marca|reserve|reserva)\b|"
+        r"^(?:quero|gostaria de|preciso|posso)\s+(?:agendar|marcar|reservar)\b|"
+        r"^(?:faça|faca)\s+(?:um\s+)?(?:agendamento|reserva)\b",
+        raw_text.casefold(),
+    )
+    if booking_request and step in {None, "chat", "completed"}:
+        _start_flow(chat_id, "booking")
+        return
+
     if step not in {"name", "phone", "support_name", "support_phone"} and raw_text:
         if len(raw_text) > MAX_CHAT_LENGTH:
             send_message(chat_id, "A mensagem ficou longa demais. Envie uma pergunta mais curta.")
@@ -796,3 +833,4 @@ def main() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     main()
+
