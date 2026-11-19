@@ -155,6 +155,42 @@ def _three_options(slots, latest=False):
     return list(choices.values())
 
 
+_SCHEDULING_TERMS = re.compile(r"horario|disponib|vaga|agend|reserv|marcar|encaix")
+_DAY_TERMS = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{4})?\b|\bdepois de amanha\b|\bamanha\b|\bhoje\b"
+    r"|\b(?:segunda|terca|quarta|quinta|sexta|sabado|domingo)(?:-feira)?\b|\bfeira\b|\bdia\b|\d+"
+)
+# Palavras que acompanham uma resposta curta de data ("e na sexta?", "pode ser amanhã").
+_FOLLOW_UP_WORDS = {
+    "a", "as", "o", "os", "e", "ou", "mas", "no", "na", "nos", "nas", "em", "de", "do", "da", "para", "pra", "pro",
+    "por", "favor", "pode", "ser", "entao", "sim", "ok", "certo", "beleza", "tambem", "que", "tal", "qual", "quais",
+    "como", "fica", "seria", "talvez", "prefiro", "melhor", "quero", "queria", "gostaria", "mesmo", "isso", "esse",
+    "essa", "um", "uma", "ai", "opa", "tem", "teria", "ha", "proxima", "proximo", "semana", "agora", "outro",
+    "outra", "serve", "consegue", "consigo", "ja", "so", "se", "eu", "me",
+}
+
+
+def _continues_scheduling(text, services, barbers, today):
+    """Decide se a mensagem atual continua a busca de horários iniciada antes.
+
+    Serviço, profissional, horário, período ou termos de agenda continuam a busca.
+    Uma data sozinha só continua quando vem em uma resposta curta; perguntas sobre
+    outro assunto que apenas citam "amanhã" não devem virar agendamento.
+    """
+    if _SCHEDULING_TERMS.search(text) or _requested_service(text, services):
+        return True
+    if "sem preferencia" in text or "qualquer" in text:
+        return True
+    if any(normalize_text(barber["name"]) in text for barber in barbers):
+        return True
+    if _time_preference(text) is not None:
+        return True
+    if _requested_day(text, today) is None:
+        return False
+    residual = re.findall(r"[a-z]+", _DAY_TERMS.sub(" ", text))
+    return all(word in _FOLLOW_UP_WORDS for word in residual)
+
+
 def availability_answer(messages):
     user_texts = [normalize_text(message["content"]) for message in messages if message["role"] == "user"][-8:]
     if not user_texts:
@@ -164,10 +200,14 @@ def availability_answer(messages):
     if not re.search(r"horario|disponib|vaga|agend|reserv|marcar|quero.*(?:cort|barba|cabelo)|tem.*corte", context):
         return None
     # Uma nova dúvida informativa interrompe a coleta de dados do agendamento.
-    if re.search(r"preco|quanto|endereco|pagamento|politica|cancel|remarc|atras|telefone", latest):
+    if re.search(r"preco|quanto|endereco|pagamento|politica|cancel|remarc|atras|telefone|funciona|expediente|pacote"
+                 r"|\babre\b|\bfecha\b", latest):
         return None
     services, barbers = list_services(), list_barbers()
     today = datetime.now(TZ).date()
+    # O contexto anterior só é reaproveitado quando a mensagem atual continua o agendamento.
+    if len(user_texts) > 1 and not _continues_scheduling(latest, services, barbers, today):
+        return None
     service = barber_id = chosen_day = preference = None
     for text in reversed(user_texts):
         service = service or _requested_service(text, services)
