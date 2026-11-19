@@ -69,7 +69,30 @@ def test_floating_chat_preserves_booking_and_shares_conversation(booking_app, mo
     assert not ui.exception
 
 
-def request_chat_suggestions(ui):
+def mock_chat_options(monkeypatch):
+    import barber_bot.api as api_module
+    from barber_bot.schedule import availability, list_services
+
+    service = list_services()[0]
+    today = datetime.now(TZ).date()
+    slots = []
+    for offset in range(MIN_BOOKING_DAYS, MAX_BOOKING_DAYS + 1):
+        slots = availability(service["id"], today + timedelta(days=offset))
+        if slots:
+            break
+
+    def fake_agent(messages, **kwargs):
+        return {
+            "content": "Encontrei estas opções disponíveis.", "intent": "consultar_disponibilidade",
+            "confidence": 1.0, "tools_called": ["buscar_disponibilidade"], "mode": "ai",
+            "outcome": "answered", "booking_options": {"service": service, "slots": slots[:3]},
+        }
+
+    monkeypatch.setattr(api_module, "run_agent", fake_agent)
+
+
+def request_chat_suggestions(ui, monkeypatch):
+    mock_chat_options(monkeypatch)
     day = next_open_days()[0]
     button(ui, "Conversar").click().run()
     ui.chat_input(key="floating_chat_input").set_value(
@@ -83,12 +106,12 @@ def suggestion_button(ui):
     return next(widget for widget in ui.button if widget.key and widget.key.startswith("floating_") and "_suggestion_" in widget.key)
 
 
-def test_chat_suggestion_prefills_booking_and_keeps_contact_without_creating_reservation(booking_app):
+def test_chat_suggestion_prefills_booking_and_keeps_contact_without_creating_reservation(booking_app, monkeypatch):
     ui, _ = booking_app
     choose_slot(ui)
     ui.text_input(key="booking_name").input("Cliente Teste")
     ui.text_input(key="booking_phone").input("16999990000").run()
-    options = request_chat_suggestions(ui)
+    options = request_chat_suggestions(ui, monkeypatch)
     slot = options["slots"][0]
     suggestion_button(ui).click().run()
     assert not ui.exception
@@ -102,9 +125,9 @@ def test_chat_suggestion_prefills_booking_and_keeps_contact_without_creating_res
         assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 0
 
 
-def test_chat_suggestion_rejects_a_slot_occupied_after_the_answer(booking_app):
+def test_chat_suggestion_rejects_a_slot_occupied_after_the_answer(booking_app, monkeypatch):
     ui, api = booking_app
-    options = request_chat_suggestions(ui)
+    options = request_chat_suggestions(ui, monkeypatch)
     slot = options["slots"][0]
     response = api.post("/appointments", json={
         "customer_name": "Outro Cliente", "customer_phone": "16999990001", "service_id": options["service"]["id"],
@@ -118,9 +141,9 @@ def test_chat_suggestion_rejects_a_slot_occupied_after_the_answer(booking_app):
     assert not has_contact_fields(ui)
 
 
-def test_chat_suggestion_rejects_changed_price(booking_app):
+def test_chat_suggestion_rejects_changed_price(booking_app, monkeypatch):
     ui, _ = booking_app
-    options = request_chat_suggestions(ui)
+    options = request_chat_suggestions(ui, monkeypatch)
     with db.connect() as conn:
         conn.execute("UPDATE services SET price=price+5 WHERE id=?", (options["service"]["id"],))
     suggestion_button(ui).click().run()
@@ -129,8 +152,9 @@ def test_chat_suggestion_rejects_changed_price(booking_app):
     assert ui.session_state.get("booking_slot") is None
 
 
-def test_chat_tab_suggestion_switches_to_booking_review(booking_app):
+def test_chat_tab_suggestion_switches_to_booking_review(booking_app, monkeypatch):
     ui, _ = booking_app
+    mock_chat_options(monkeypatch)
     ui.session_state["public_section"] = "Conversar"
     ui.run()
     day = next_open_days()[0]
@@ -144,9 +168,9 @@ def test_chat_tab_suggestion_switches_to_booking_review(booking_app):
     assert has_contact_fields(ui)
 
 
-def test_chat_suggestion_preserves_pending_confirmation(booking_app):
+def test_chat_suggestion_preserves_pending_confirmation(booking_app, monkeypatch):
     ui, _ = booking_app
-    request_chat_suggestions(ui)
+    request_chat_suggestions(ui, monkeypatch)
     pending = {"request_key": "confirmation-not-received"}
     ui.session_state["booking_pending"] = pending
     suggestion_button(ui).click().run()
@@ -590,6 +614,9 @@ def test_legacy_receipt_session_does_not_crash_after_upgrade(booking_app):
 
 
 def test_site_chat_cancels_only_after_written_confirmation_and_clears_receipt(booking_app):
+    from barber_bot.assistant import OPENAI_API_KEY
+    if not OPENAI_API_KEY:
+        pytest.skip("A conversa de gestão de reservas exige OPENAI_API_KEY.")
     ui, api = booking_app
     choose_slot(ui)
     ui.text_input(key="booking_name").input("Cliente Teste")
@@ -638,6 +665,9 @@ def test_recovery_form_restores_legacy_booking_and_allows_confirmed_cancellation
 
 
 def test_chat_recovers_booking_and_masks_phone_and_one_time_code(booking_app, monkeypatch):
+    from barber_bot.assistant import OPENAI_API_KEY
+    if not OPENAI_API_KEY:
+        pytest.skip("A recuperação pelo chat livre exige OPENAI_API_KEY.")
     from barber_bot import customer_recovery as recovery
     monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
     monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)

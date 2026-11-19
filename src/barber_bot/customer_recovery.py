@@ -65,7 +65,7 @@ def start_recovery(phone, owner_key):
         recent = conn.execute("SELECT count(*) FROM customer_recovery WHERE owner_hash=? AND created_at>?", (digest, now-900)).fetchone()[0]
         if recent >= 3:
             raise RecoveryError("Aguarde alguns minutos antes de solicitar outra verificação.", 429)
-        # Supersede this browser's older challenges, never another customer's.
+        # Substitui desafios antigos deste navegador, sem afetar outras pessoas.
         conn.execute("UPDATE customer_recovery SET consumed_at=? WHERE owner_hash=? AND consumed_at IS NULL", (now, digest))
         conn.execute("INSERT INTO customer_recovery(challenge_hash,owner_hash,phone,created_at,expires_at) VALUES (?,?,?,?,?)",
                      (_digest(nonce), digest, phone, now, now+CHALLENGE_TTL))
@@ -140,7 +140,7 @@ def verify_recovery(nonce, code, owner_key):
             _grant(conn, row["phone"], "web", owner_key, now)
             conn.execute("UPDATE customer_recovery SET consumed_at=? WHERE challenge_hash=?", (now, _digest(nonce)))
             conn.execute("DELETE FROM customer_recovery_flows WHERE owner_hash=?", (digest,))
-    # The failed-attempt counter must commit before raising.
+    # Salva o contador antes de informar o erro.
     if failure:
         raise failure
 

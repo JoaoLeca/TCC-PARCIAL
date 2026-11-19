@@ -182,35 +182,37 @@ async function run(id, title, expected, body) {
   }
 }
 
-// A05 – IA desativada ------------------------------------------------------
-await run("A05", "IA desativada", "Consultas locais respondem; pergunta dependente da IA informa indisponibilidade sem resposta fabricada e registra unavailable.", async () => {
+// A05 – Conversa livre sem chave OpenAI ------------------------------------
+await run("A05", "Conversa livre sem chave OpenAI", "Sem a chave, toda mensagem livre informa que o atendimento virtual não está habilitado.", async () => {
   const health = (await api("GET", "/health")).data;
-  check(health.gpt_configured === false, "API sem chave da OpenAI (gpt_configured = false)");
+  if (health.gpt_configured) {
+    current.notExecuted = "Execute este cenário em uma instância separada, sem OPENAI_API_KEY.";
+    step(current.notExecuted);
+    return;
+  }
   await newSession(); await tab("Conversar");
   const before = snapshot("antes");
-  const pay = await chat("Quais formas de pagamento vocês aceitam?");
-  check(/Pix/i.test(pay) && /cart/i.test(pay) && /dinheiro/i.test(pay), "Formas de pagamento vêm do cadastro (dinheiro, Pix e cartão)");
-  const price = await chat("Quanto custa o corte?");
-  check(price.includes("R$ 50,00"), "Preço do corte (R$ 50,00) vem do catálogo");
-  const slots = await chat(`Tem horário para corte dia ${fmt(D_TUE)}?`);
-  check(/Encontrei estas opções/.test(slots), "Consulta de vagas responde com opções reais sem IA");
-  const weather = await chat("Qual a previsão do tempo para amanhã?");
-  check(/indispon/i.test(weather), "Na mesma conversa, logo após a consulta de vagas, pergunta fora das respostas locais informa que a IA está indisponível");
-  const mid = snapshot("apos_conversa");
-  check(mid.ev_indisponivel === before.ev_indisponivel + 1, "Telemetria registra um evento unavailable para essa pergunta");
-  await shot("A05_contexto_anterior");
-  // Mesma pergunta em uma conversa nova, sem consulta de vagas antes.
-  await newSession(); await tab("Conversar");
-  const fresh = await chat("Qual a previsão do tempo para amanhã?");
-  check(/indispon/i.test(fresh), "Em conversa nova, a pergunta fora do escopo informa que a IA está indisponível, sem resposta fabricada");
+  const answers = [];
+  for (const question of ["Quais formas de pagamento vocês aceitam?", "Quanto custa o corte?",
+    `Tem horário para corte dia ${fmt(D_TUE)}?`, "Qual a previsão do tempo para amanhã?"]) {
+    answers.push(await chat(question));
+  }
+  check(answers.every((answer) => /atendimento virtual não está habilitado/i.test(answer)),
+    "Sem a chave, perguntas de atendimento não recebem respostas locais simuladas");
   const after = snapshot("depois");
-  check(after.ev_indisponivel === mid.ev_indisponivel + 1, "Telemetria registra o evento unavailable da conversa nova");
+  check(after.ev_indisponivel === before.ev_indisponivel + answers.length, "Cada pergunta indisponível é registrada na telemetria");
   check(after.reservas === before.reservas, "Nenhuma reserva criada");
   await shot("A05_ia_desativada");
 });
 
-// A06 – Restrições de horário sem IA (rota /chat usada pelo site) -----------
-await run("A06", "Restrições de horário sem IA", "Cada expressão segue a semântica definida, considerando duração, expediente e bloqueios; nenhuma vaga inventada.", async () => {
+// A06 – Restrições de horário com IA ---------------------------------------
+await run("A06", "Restrições de horário com IA", "A IA interpreta preferências e a API retorna apenas vagas reais que respeitam expediente, duração e bloqueios.", async () => {
+  const health = (await api("GET", "/health")).data;
+  if (!health.gpt_configured) {
+    current.notExecuted = "Execute este cenário com OPENAI_API_KEY configurada.";
+    step(current.notExecuted);
+    return;
+  }
   const day = iso(D_TUE), dd = fmt(D_TUE);
   const real = new Set((await availability(1, day)).map((s) => `${s.starts_at}|${s.barber_id}`));
   const before = snapshot("antes");

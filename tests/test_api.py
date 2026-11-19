@@ -37,15 +37,19 @@ def test_api_requires_confirmation_and_prevents_duplicate_booking(client):
     assert client.post("/appointments", json={**payload, "customer_phone": "16999990001", "confirmed": True}).status_code == 409
 
 
-def test_chat_has_guided_help_without_api_key(client, monkeypatch):
+def test_chat_reports_unavailable_without_api_key(client, monkeypatch):
     import barber_bot.assistant as assistant
     monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
     response = client.post("/chat", json={"session_id": "test", "messages": [{"role": "user", "content": "Oi"}]})
     assert response.status_code == 200
-    assert response.json()["mode"] == "guided"
+    assert response.json()["mode"] == "unavailable"
+    assert response.json()["answer"] == "O atendimento virtual não está habilitado."
 
 
 def test_chat_returns_real_clickable_booking_options(client):
+    import barber_bot.assistant as assistant
+    if not assistant.OPENAI_API_KEY:
+        pytest.skip("A consulta conversacional exige OPENAI_API_KEY.")
     today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
     day = next(today + timedelta(days=i) for i in range(1, 4) if (today + timedelta(days=i)).weekday() != 6)
     result = client.post("/chat", json={"session_id": "clickable-test", "messages": [
@@ -72,7 +76,7 @@ def test_customer_access_code_is_required_and_bound_to_one_booking(client):
         for slot in (slots[0], next(slot for slot in slots if slot["starts_at"][11:16] == "10:00"))
     ]
     assert client.get("/appointments", params={"phone": "16999990000"}).status_code == 405
-    # Only old reservations retain the legacy API. New booking responses never mint it.
+    # Reservas antigas aceitam a rota antiga; novas não criam esse código.
     from barber_bot.schedule import _issue_access_code
     with db.connect() as conn:
         for booking in (first, second):
@@ -159,6 +163,9 @@ def test_owned_changes_require_confirmation_and_current_snapshot(client):
 
 
 def test_chat_management_uses_owner_and_separate_written_confirmation(client, monkeypatch):
+    import barber_bot.assistant as assistant
+    if not assistant.OPENAI_API_KEY:
+        pytest.skip("A conversa de gestão de reservas exige OPENAI_API_KEY.")
     token = "owner-" + "x" * 40
     booking = owned_booking(client, token)
 
@@ -191,6 +198,9 @@ def test_customer_token_never_reaches_the_model(client, monkeypatch):
 
 
 def test_recovery_api_and_chat_restore_access_to_another_session_without_staff(client, monkeypatch):
+    import barber_bot.assistant as assistant
+    if not assistant.OPENAI_API_KEY:
+        pytest.skip("A continuação da conversa após a recuperação exige OPENAI_API_KEY.")
     import barber_bot.customer_recovery as recovery
     monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
     monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)
@@ -211,6 +221,9 @@ def test_recovery_api_and_chat_restore_access_to_another_session_without_staff(c
 
 
 def test_chat_recovery_keeps_code_and_phone_out_of_model_and_logs(client, monkeypatch):
+    import barber_bot.assistant as assistant
+    if not assistant.OPENAI_API_KEY:
+        pytest.skip("A confirmação final da reserva pelo chat exige OPENAI_API_KEY.")
     import barber_bot.api as api
     import barber_bot.customer_recovery as recovery
     monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")

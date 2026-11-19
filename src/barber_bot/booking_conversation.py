@@ -112,6 +112,22 @@ def _confirm_text(action, booking, slot=None):
 def _remember_preferences(state, text):
     today = datetime.now(TZ).date()
     day = _requested_day(text, today)
+    if day is None and state.get("stage") in ("date", "options"):
+        bare_day = re.fullmatch(r"\s*(\d{1,2})\s*", text)
+        if bare_day and 1 <= int(bare_day[1]) <= 31:
+            wanted = int(bare_day[1])
+            for offset in range(13):
+                month_index = today.month - 1 + offset
+                year, month = today.year + month_index // 12, month_index % 12 + 1
+                try:
+                    candidate = datetime(year, month, wanted).date()
+                except ValueError:
+                    continue
+                if candidate >= today:
+                    day = candidate
+                    break
+            if day is None:
+                day = "invalid"
     preference = _time_preference(text)
     if day is not None:
         state["day"] = day.isoformat() if day != "invalid" else "invalid"
@@ -206,8 +222,8 @@ def handle_booking_message(messages, channel, owner_key):
             _clear(conn, channel, owner_hash)
             return _reply(state["action"], "Tudo bem, encerrei este pedido. Sua reserva não foi alterada.", outcome="aborted")
         if action:
-            # An explicit fresh request supersedes an older proposal; yes must
-            # always answer the final proposal currently stored for this owner.
+            # Um pedido novo substitui a proposta anterior.
+            # "Sim" só vale para a proposta atual.
             state = None
         if state and state["action"] == "consult" and not action:
             _clear(conn, channel, owner_hash)
@@ -247,7 +263,7 @@ def handle_booking_message(messages, channel, owner_key):
                 if state["action"] == "cancel":
                     _save(conn, channel, owner_hash, state)
                     return _reply("cancel", _confirm_text("cancel", booking))
-                return _options(conn, channel, owner_hash, state, booking, text)
+                return _options(conn, channel, owner_hash, state, booking, "")
             booking = _trusted_booking(conn, channel, owner_key, state["booking_id"])
             if _snapshot(booking) != state["snapshot"]:
                 _clear(conn, channel, owner_hash)

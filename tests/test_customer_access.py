@@ -139,7 +139,7 @@ def test_unowned_legacy_request_cannot_be_claimed_by_replay(db):
 
     own = book(db, channel=None, key=None, request_key="old-request")
     args = ("Ana", own["customer_phone"], own["service_id"], own["barber_id"], own["starts_at"], True, db)
-    # This is the fingerprint emitted by the previous application version.
+    # Esta assinatura veio da versão anterior do sistema.
     payload = ["Ana", "16999990042", 1, own["barber_id"], own["starts_at"], None, None]
     old_hash = sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
     with connect(db) as conn:

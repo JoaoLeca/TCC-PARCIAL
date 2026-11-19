@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -8,18 +8,13 @@ from barber_bot.db import initialize_database
 from barber_bot.knowledge import search_knowledge
 from barber_bot.operations import shop_profile
 from barber_bot.schedule import availability, list_services, list_barbers
-from datetime import date
-from barber_bot.availability_conversation import availability_answer, basic_answer
-from barber_bot.conversation import normalize_text, sanitize_chat_messages
-import re
-from uuid import uuid4
+from barber_bot.conversation import sanitize_chat_messages
 
 
-def build_agent(channel: str = "web", session_id: str | None = None, *, booking_handler=None, runtime: dict | None = None):
+def build_agent(channel: str = "web", *, booking_handler=None, runtime: dict | None = None):
     if not OPENAI_API_KEY:
         raise RuntimeError("O modo GPT precisa da chave OPENAI_API_KEY. A consulta de serviços e a agenda continuam disponíveis sem ela.")
     initialize_database()
-    session_id = session_id or f"adhoc:{uuid4()}"
     runtime = runtime if runtime is not None else {}
 
     @tool
@@ -42,11 +37,13 @@ def build_agent(channel: str = "web", session_id: str | None = None, *, booking_
         """Busca horários reais para um serviço em uma data AAAA-MM-DD, opcionalmente filtrando barbeiro."""
         slots = availability(servico_id, date.fromisoformat(data), barbeiro_id)
         service = next((item for item in list_services() if item["id"] == servico_id), None)
-        if service and slots:
-            existing = runtime.setdefault("availability_slots", {})
+        if service:
+            options = {}
             for slot in slots:
-                existing[(slot["starts_at"], slot["barber_id"])] = slot
-            runtime["booking_options"] = {"service": service, "slots": list(existing.values())[:3]}
+                options.setdefault(slot["starts_at"], slot)
+                if len(options) == 3:
+                    break
+            runtime["booking_options"] = {"service": service, "slots": list(options.values())}
         return slots
 
     @tool
@@ -75,40 +72,27 @@ def build_agent(channel: str = "web", session_id: str | None = None, *, booking_
         if channel == "telegram" else
         "Para fazer uma reserva, oriente a usar a aba Agendar. Para consultar, remarcar ou cancelar, use Meus horários na sessão que criou a reserva ou faça o pedido por escrito nesta conversa. Em outra sessão, oriente a confirmar o telefone pelo Telegram em Meus horários ou no próprio chat para recuperar o acesso automaticamente."
     )
-    system_prompt = f"""Você é o assistente virtual da barbearia. Toda resposta de atendimento deve ser produzida por você, usando o contexto da conversa e as ferramentas quando necessário. No início de cada turno no site, chame verificar_fluxo_de_reserva com a chamada sem argumentos: se a resposta for diferente de NOOP, repita-a fielmente e não invente, confirme nem altere dados. O servidor controla a propriedade da reserva e só conclui mudanças depois da confirmação explícita do cliente. Use consultar_barbearia para obter dados atuais. A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Responda em português brasileiro, com clareza e cordialidade; entenda perguntas indiretas e mensagens curtas pelo contexto, fazendo uma pergunta objetiva se faltar informação. Use consultar_servicos para preços e duração, consultar_barbeiros para escala e buscar_disponibilidade para horários reais. Para agendamento novo, conduza a conversa, consulte vagas e apresente até três opções; a pessoa ainda revisa e confirma em Agendar. Nunca invente disponibilidade, preços ou regras. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se não houver informação relevante, diga que não encontrou. {booking_instructions} Se houver reclamação, erro ou pedido fora do escopo, ofereça falar com a equipe. Não solicite dados além do necessário nem envie dados pessoais à ferramenta de IA. Para endereço, contato, pagamento e expediente, use consultar_barbearia. Essas ferramentas têm os dados operacionais atuais."""
+    system_prompt = f"""Você é o assistente virtual da barbearia. Produza as respostas em português brasileiro, com clareza e cordialidade. Use o histórico para entender respostas curtas como datas, números, horários e períodos do dia; se houver mais de uma interpretação possível, faça uma pergunta objetiva.
+
+Use somente os dados retornados pelas ferramentas para informar serviços, preços, profissionais, expediente, contato, endereço, formas de pagamento, políticas e disponibilidade. Consulte os dados atuais antes de responder: consultar_servicos para serviços e preços, consultar_barbeiros para profissionais e escala, consultar_barbearia para informações da barbearia, buscar_disponibilidade para vagas reais e consultar_politicas para regras. Nunca invente nem deduza vagas, preços, horários ou políticas. Se a consulta não retornar a informação necessária, diga que não conseguiu confirmar e ofereça ajuda da equipe.
+
+A data e hora atuais são informadas em cada conversa no fuso {TIMEZONE}. Ao consultar horários, use o serviço, a data e as preferências informados no histórico. Para agendamento novo, conduza a conversa, consulte vagas e apresente até três opções realmente retornadas; a pessoa ainda revisa e confirma em Agendar.
+
+No início de cada turno no site, chame verificar_fluxo_de_reserva sem argumentos. Se a resposta for diferente de NOOP, repita-a fielmente e não invente, confirme nem altere dados. O servidor controla a propriedade da reserva e só conclui mudanças depois da confirmação explícita do cliente. Para políticas, use apenas trechos recuperados e cite o nome do arquivo-fonte; se não houver informação relevante, diga que não encontrou. {booking_instructions} Se houver reclamação, erro ou pedido fora do escopo, ofereça falar com a equipe. Não solicite dados além do necessário nem envie dados pessoais à ferramenta de IA."""
     tools = [consultar_servicos, consultar_barbeiros, consultar_barbearia, buscar_disponibilidade, consultar_politicas, solicitar_atendimento_humano]
     if channel == "web":
         tools.append(verificar_fluxo_de_reserva)
     return create_agent(ChatOpenAI(model=OPENAI_MODEL, api_key=OPENAI_API_KEY), tools=tools, system_prompt=system_prompt)
 
 
-def _handoff(messages, session_id, channel):
-    next_step = "Envie /atendente para confirmar." if channel == "telegram" else "Clique em Falar com a equipe e confirme o formulário para solicitar atendimento."
-    return {"content": f"Posso orientar você a falar com a equipe. {next_step}",
-            "intent": "atendimento_humano", "confidence": 1.0, "tools_called": [],
-            "support_offer": True, "outcome": "offered", "mode": "guided"}
-
-
-def run_agent(messages: list[dict], *, channel: str = "web", session_id: str | None = None, booking_handler=None) -> dict:
-    session_id = session_id or f"adhoc:{uuid4()}"
+def run_agent(messages: list[dict], *, channel: str = "web", booking_handler=None) -> dict:
     messages = sanitize_chat_messages(messages)[-12:]
     if not OPENAI_API_KEY:
-        if channel != "web":
-            latest = normalize_text(next((message["content"] for message in reversed(messages) if message["role"] == "user"), ""))
-            if re.search(r"humano|atendente|falar com (?:uma? )?pessoa|reclamacao", latest):
-                return _handoff(messages, session_id, channel)
-            if guided := availability_answer(messages):
-                guided["content"] += " Envie /agendar para escolher e confirmar." if guided["slots"] else ""
-                return guided
-            fallback = basic_answer(messages)
-            if fallback:
-                return {"content": fallback, "intent": "servicos_precos", "confidence": 1.0,
-                        "tools_called": ["consulta_guiada"], "outcome": "answered", "mode": "guided"}
         return {"content": "O atendimento virtual não está habilitado.",
                 "intent": "indisponivel", "confidence": 0.0, "tools_called": [], "outcome": "unavailable", "mode": "unavailable"}
     try:
         runtime = {"latest_user_message": next((message["content"] for message in reversed(messages) if message["role"] == "user"), "")}
-        agent = build_agent(channel, session_id, booking_handler=booking_handler, runtime=runtime)
+        agent = build_agent(channel, booking_handler=booking_handler, runtime=runtime)
         current = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d/%m/%Y %H:%M")
         result = agent.invoke({"messages": [{"role": "system", "content": f"Data e hora atuais: {current}. Considere o histórico recente. Se a pergunta sobre horários não especificar serviço ou data, pergunte o que falta; quando uma data for solicitada, consulte a agenda e proponha alternativas disponíveis se necessário."}, *messages]})
         last = result["messages"][-1]

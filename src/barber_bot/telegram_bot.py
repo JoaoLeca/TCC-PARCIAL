@@ -88,9 +88,9 @@ def _load_state(chat_id: str) -> dict[str, Any]:
                 updated = updated.replace(tzinfo=timezone.utc)
             state = json.loads(row["state_json"])
             if not isinstance(state, dict):
-                raise ValueError("Invalid conversation state")
+                raise ValueError("O estado da conversa é inválido.")
             if "access_code" in state:
-                # Older versions stored the bearer secret in completed sessions.
+                # Versões antigas salvavam o segredo em sessões concluídas.
                 state.pop("access_code")
                 _save_state(chat_id, state)
             if state.get("step") == "confirm" and state.get("request_key"):
@@ -127,7 +127,7 @@ def _receipt_fields(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _discard_management_proposal(chat_id: str) -> None:
-    # A later yes must never confirm a proposal abandoned for another flow.
+    # Um "sim" não confirma um pedido que já foi substituído.
     handle_booking_message([{"role": "user", "content": "não"}], "telegram", chat_id)
 
 
@@ -136,7 +136,7 @@ def _keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 
 def _flow_keyboard(chat_id: str, state: dict[str, Any], rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
-    # Every rendered menu has its own token: old pages and old flows cannot select current options.
+    # Cada menu tem seu token para impedir escolhas de menus antigos.
     state["callback_token"] = token_hex(6)
     _save_state(chat_id, state)
     return _keyboard([[(label, f"{state['callback_token']}:{action}") for label, action in row] for row in rows])
@@ -320,7 +320,7 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
         _show_slots(chat_id, state)
         return
 
-    # Persist completion before replying so repeated confirmation clicks do not create a second booking.
+    # Salva a reserva antes da resposta para evitar duplicidade.
     completed = {"step": "completed", "appointment_id": booking["id"],
                  "receipt_pending": True, "callback_token": state["callback_token"]}
     _save_state(chat_id, completed)
@@ -328,8 +328,7 @@ def _book(chat_id: str, state: dict[str, Any]) -> None:
 
 
 def _deliver_receipt(chat_id: str, state: dict[str, Any]) -> None:
-    # Re-read committed data even on the first delivery. An owned booking must
-    # belong to this trusted chat; the persisted session ID alone is insufficient.
+    # Confere a reserva salva e confirma que pertence a este chat.
     with connect() as conn:
         row = conn.execute("""
             SELECT a.*,b.name AS barber,s.name AS service,
@@ -346,8 +345,7 @@ def _deliver_receipt(chat_id: str, state: dict[str, Any]) -> None:
                 except BookingError:
                     booking = None
             else:
-                # Ownerless historical receipts may be recovered only through
-                # this private chat's already persisted successful booking.
+                # Reservas antigas sem vínculo só podem ser recuperadas neste chat.
                 booking = dict(row)
                 booking["identification_code"] = identification_code(row["customer_phone"])
         else:
@@ -358,8 +356,7 @@ def _deliver_receipt(chat_id: str, state: dict[str, Any]) -> None:
     booking = public_appointment(booking)
     state["receipt_pending"] = True
     _save_state(chat_id, state)
-    # Reconcile the event on every delivery attempt, including a retry after a
-    # failure between the booking commit and telemetry commit. This is idempotent.
+    # Atualiza o evento em cada tentativa sem criar registros duplicados.
     record_booking(f"telegram:{chat_id}", booking["id"], channel="telegram")
     start = datetime.fromisoformat(booking["starts_at"]).astimezone(TZ)
     heading = "Agendamento cancelado." if booking.get("status") == "cancelled" else "✅ Agendamento confirmado!"
@@ -440,7 +437,7 @@ def _dispatch_callback(chat_id: str, state: dict[str, Any], data: str) -> None:
     elif data.startswith("barber:") and state.get("step") == "barber":
         barber_id = int(data.split(":", 1)[1])
         if barber_id and not any(item["id"] == barber_id for item in list_barbers()):
-            raise ValueError("Unknown professional")
+            raise ValueError("O profissional selecionado não existe.")
         state["barber_id"] = barber_id or None
         state["slot_offset"] = 0
         _show_slots(chat_id, state)
@@ -534,7 +531,7 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
     if state.get("receipt_pending"):
         _deliver_receipt(chat_id, state)
 
-    if command in {"/start", "/help"}:
+    if command in {"/start", "/ajuda", "/help"}:
         _discard_management_proposal(chat_id)
         _clear_state(chat_id)
         send_message(
@@ -656,7 +653,7 @@ def _handle_text(chat_id: str, message: dict[str, Any]) -> None:
     result: dict[str, Any] = {}
     started = time.monotonic()
     try:
-        result = run_agent(history, channel="telegram", session_id=f"telegram:{chat_id}")
+        result = run_agent(history, channel="telegram")
         answer = str(result.get("content", "Não consegui formular uma resposta agora."))
     except Exception:
         log.warning("Falha na resposta de IA para uma conversa do Telegram.")
@@ -702,7 +699,7 @@ def main() -> None:
             {"command": "comprovante", "description": "Reenviar o último comprovante"},
             {"command": "atendente", "description": "Solicitar atendimento humano"},
             {"command": "atendimento", "description": "Consultar situação do atendimento"},
-            {"command": "help", "description": "Ver ajuda"},
+            {"command": "ajuda", "description": "Ver ajuda"},
         ]})
     except TelegramError:
         log.info("Não foi possível registrar os comandos no menu do Telegram.")

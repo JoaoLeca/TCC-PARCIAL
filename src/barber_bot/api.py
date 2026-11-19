@@ -27,7 +27,12 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Barbearia Imperial API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="API da Barbearia Imperial",
+    description="Serviços de agendamento, atendimento e gestão da barbearia.",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 app.include_router(staff_router)
 
 
@@ -298,14 +303,12 @@ def chat(payload: ChatIn):
         if result is None:
             def booking_handler(request_text):
                 return handle_booking_message([{"role": "user", "content": request_text}], "web", owner_key)
-            result = run_agent(messages, session_id=payload.session_id, booking_handler=booking_handler)
+            result = run_agent(messages, booking_handler=booking_handler)
             if result.get("needs_verification") and owner_key:
                 result = begin_chat_recovery(owner_key, latest)
         elapsed = round((perf_counter() - started) * 1000)
         record_interaction(payload.session_id, messages, result, elapsed)
         options = result.get("booking_options")
-        if not options and result.get("mode") == "guided" and result.get("service") and result.get("slots"):
-            options = {"service": result["service"], "slots": result["slots"][:3]}
         return {"answer": result["content"], "intent": result["intent"], "confidence": result["confidence"],
                 "latency_ms": elapsed, "mode": result.get("mode", "ai"), "support_request": result.get("support_request"),
                 "booking_options": options, "outcome": result.get("outcome"), "recovery_stage": result.get("recovery_stage")}

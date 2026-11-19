@@ -193,7 +193,7 @@ def create_appointment(customer_name: str, customer_phone: str, service_id: int,
     owner_hash = owner_digest(owner_channel, owner_key) if owner_channel is not None or owner_key is not None else None
     start = _parse_start(starts_at)
     payload = [name, phone_key(phone), service_id, barber_id, start.isoformat(), expected_price, expected_duration]
-    # Preserve old unowned request fingerprints, but never let their replay claim ownership.
+    # Mantém pedidos antigos sem conceder acesso à reserva.
     if owner_hash is not None:
         payload.extend([owner_channel, owner_hash])
     payload_hash = _access_digest(json.dumps(payload, ensure_ascii=False))

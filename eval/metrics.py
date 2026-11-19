@@ -35,7 +35,7 @@ def intent_metrics(rows: list[dict]) -> dict:
 
 
 def fcr_metrics(rows: list[dict]) -> dict:
-    # Only complete human consensus labels establish resolution; an answer is not proof.
+    # Só a avaliação final dos revisores conta como resolução.
     fields = ("expected_task_achieved", "escalated", "repeated_question")
     eligible = [r for r in rows if all(r.get(field) in ("0", "1") for field in fields)]
     solved = [r for r in eligible if r["expected_task_achieved"] == "1" and r["escalated"] == "0" and r["repeated_question"] == "0"]

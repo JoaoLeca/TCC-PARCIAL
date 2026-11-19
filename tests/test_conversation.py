@@ -23,71 +23,20 @@ def test_private_data_is_removed_before_model_and_history():
     assert code in original[0]["content"]
 
 
-def test_guided_search_uses_context_and_afternoon(conversation_db):
-    from barber_bot.availability_conversation import availability_answer
-    day = datetime.now(TZ).date() + timedelta(days=1)
-    while day.weekday() == 6:
-        day += timedelta(days=1)
-    answer = availability_answer([
-        {"role": "user", "content": "Quero agendar corte"},
-        {"role": "assistant", "content": "Qual dia?"},
-        {"role": "user", "content": f"{day.isoformat()} à tarde"},
-    ])
-    assert 1 <= len(answer["slots"]) <= 3
-    assert all(datetime.fromisoformat(slot["starts_at"]).hour >= 12 for slot in answer["slots"])
-    assert all(slot["starts_at"].startswith(day.isoformat()) for slot in answer["slots"])
-    assert "Qual serviço" not in answer["content"]
-
-
-def test_unavailable_professional_offers_real_alternative(conversation_db):
-    from barber_bot.availability_conversation import availability_answer
-    day = datetime.now(TZ).date() + timedelta(days=1)
-    while day.weekday() == 6:
-        day += timedelta(days=1)
-    with db.connect() as conn:
-        conn.execute("UPDATE barbers SET working_days='6' WHERE name='Rafael'")
-    answer = availability_answer([{"role": "user", "content": f"Quero corte com Rafael em {day.isoformat()}"}])
-    assert answer["slots"]
-    assert all(slot["barber"] != "Rafael" for slot in answer["slots"])
-    assert "alternativ" in answer["content"].lower()
-
-
-def test_no_api_key_still_answers_faq_and_availability(conversation_db, monkeypatch):
+def test_no_api_key_disables_virtual_conversation(conversation_db, monkeypatch):
     from barber_bot import assistant
     monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
-    result = assistant.run_agent([{"role": "user", "content": "Quais os serviços e preços?"}], session_id="offline-test")
-    assert "R$ 50,00" in result["content"]
-    assert result["mode"] == "guided"
+    result = assistant.run_agent([{"role": "user", "content": "Quais os serviços e preços?"}])
+    assert result["content"] == "O atendimento virtual não está habilitado."
+    assert result["mode"] == "unavailable"
 
 
-def test_context_classifier_receives_recent_conversation(conversation_db, monkeypatch):
+def test_no_api_key_does_not_open_human_support_ticket(conversation_db, monkeypatch):
     from barber_bot import assistant
-    from barber_bot.intent import IntentResult
-    seen = []
-    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "test")
-    def classify(text):
-        seen.append(text)
-        return IntentResult(intent="politicas", confidence=0.9)
-    monkeypatch.setattr(assistant, "classify_intent", classify)
-    monkeypatch.setattr(assistant, "build_agent", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
-    result = assistant.run_agent([
-        {"role": "user", "content": "O que acontece se eu atrasar?"},
-        {"role": "assistant", "content": "Há tolerância."},
-        {"role": "user", "content": "E por meia hora?"},
-    ])
-    assert "atrasar" in seen[0]
-    assert "meia hora" in seen[0]
-    assert result["outcome"] == "unavailable"
-
-
-def test_chat_offers_human_support_without_opening_a_ticket(conversation_db):
-    from barber_bot.assistant import run_agent
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
     messages = [{"role": "user", "content": "Quero falar com um atendente"}]
-    first = run_agent(messages, session_id="session-a")
-    second = run_agent(messages, session_id="session-a")
-    assert first["support_offer"] and second["support_offer"]
-    assert first["outcome"] == "offered"
-    assert "support_request" not in first
+    result = assistant.run_agent(messages)
+    assert result["mode"] == "unavailable"
     with db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM support_tickets").fetchone()[0] == 0
 
@@ -101,11 +50,20 @@ def search_day(conversation_db):
 
 
 def _search(day, preference, earlier=None):
-    from barber_bot.availability_conversation import availability_answer
-    messages = [{"role": "user", "content": f"Quero agendar corte em {day.isoformat()} {earlier or ''}"}]
-    if preference:
-        messages.append({"role": "user", "content": preference})
-    return availability_answer(messages)
+    from barber_bot.availability_conversation import _preference_slots, _three_options, _time_preference
+    from barber_bot.conversation import normalize_text
+    from barber_bot.schedule import availability, list_services
+    current = _time_preference(normalize_text(preference))
+    prior = _time_preference(normalize_text(earlier or ""))
+    temporal_preference = current if current is not None else prior
+    invalid = bool(temporal_preference and temporal_preference["invalid"])
+    slots = [] if invalid else _preference_slots(availability(1, day), temporal_preference)
+    choices = _three_options(slots, latest=bool(temporal_preference and temporal_preference["latest"]))
+    return {
+        "slots": choices,
+        "service": list_services()[0],
+        "content": "Informe um horário válido." if invalid else "Não encontrei horários para essa preferência." if not choices else "",
+    }
 
 
 def _times(answer):
@@ -128,7 +86,7 @@ def _times(answer):
     ("último horário", ["19:00", "18:30", "18:00"]),
     ("último horário depois das 15h", ["19:00", "18:30", "18:00"]),
 ])
-def test_guided_search_honors_precise_time_constraints(search_day, preference, expected):
+def test_time_preference_filters_real_slots(search_day, preference, expected):
     assert _times(_search(search_day, preference)) == expected
 
 
@@ -169,23 +127,23 @@ def test_negated_or_negative_time_requests_clarification_without_reusing_old_pre
 
 
 def test_local_date_is_not_interpreted_as_a_clock(search_day):
-    from barber_bot.availability_conversation import availability_answer
-    answer = availability_answer([{"role": "user", "content": f"Quero corte em {search_day:%d/%m}"}])
+    answer = _search(search_day, "")
     assert _times(answer) == ["08:00", "08:30", "09:00"]
     assert all(slot["starts_at"].startswith(search_day.isoformat()) for slot in answer["slots"])
 
 
 @pytest.mark.parametrize("day_text", ["31/02", "2026-02-30"])
 def test_invalid_date_is_rejected_without_slots(conversation_db, day_text):
-    from barber_bot.availability_conversation import availability_answer
-    answer = availability_answer([{"role": "user", "content": f"Quero corte em {day_text} às 15h"}])
-    assert answer["slots"] == []
-    assert "data válida" in answer["content"]
+    from barber_bot.availability_conversation import _requested_day
+    from barber_bot.conversation import normalize_text
+    assert _requested_day(normalize_text(day_text), datetime.now(TZ).date()) == "invalid"
 
 
 def test_latest_saturday_options_are_real_distinct_starts(conversation_db):
-    from barber_bot.availability_conversation import availability_answer
-    answer = availability_answer([{"role": "user", "content": "Quero corte no último horário de sábado"}])
+    from barber_bot.availability_conversation import _requested_day
+    from barber_bot.conversation import normalize_text
+    saturday = _requested_day(normalize_text("sábado"), datetime.now(TZ).date())
+    answer = _search(saturday, "último horário")
     assert _times(answer) == ["19:00", "18:30", "18:00"]
     assert all(datetime.fromisoformat(slot["starts_at"]).weekday() == 5 for slot in answer["slots"])
 
@@ -203,69 +161,8 @@ def test_blocked_latest_slot_and_duration_are_respected(search_day):
                for slot in answer["slots"])
 
 
-def test_alternative_professional_retains_time_constraint(search_day):
-    with db.connect() as conn:
-        conn.execute("UPDATE barbers SET working_days='6' WHERE name='Rafael'")
-    answer = _search(search_day, "com Rafael depois das 15h")
-    assert _times(answer) == ["15:30", "16:00", "16:30"]
-    assert all(slot["barber"] != "Rafael" for slot in answer["slots"])
-
-
-def test_alternative_day_retains_exact_hour(search_day):
-    with db.connect() as conn:
-        conn.execute("INSERT INTO schedule_blocks(barber_id,starts_at,ends_at,reason) "
-                     "SELECT id,?,?,? FROM barbers",
-                     (f"{search_day}T00:00:00-03:00", f"{search_day}T23:59:00-03:00", "teste"))
-    answer = _search(search_day, "às 15h")
-    assert _times(answer) == ["15:00"]
-    assert all(not slot["starts_at"].startswith(search_day.isoformat()) for slot in answer["slots"])
-
-
 def test_exact_hour_outside_real_grid_does_not_fabricate_slots(search_day):
     answer = _search(search_day, "às 15:15")
     assert answer["slots"] == []
     with db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 0
-
-
-def _after_availability(day, latest):
-    return [
-        {"role": "user", "content": f"Tem horário para corte em {day.isoformat()}?"},
-        {"role": "assistant", "content": "Encontrei estas opções disponíveis."},
-        {"role": "user", "content": latest},
-    ]
-
-
-@pytest.mark.parametrize("question", [
-    "Qual a previsão do tempo para amanhã?",
-    "Qual a capital da França?",
-    "Me conta uma piada sobre sexta-feira",
-])
-def test_unrelated_question_after_availability_is_not_treated_as_booking(search_day, monkeypatch, question):
-    from barber_bot import assistant
-    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
-    result = assistant.run_agent(_after_availability(search_day, question), session_id="context-test")
-    assert result["outcome"] == "unavailable"
-    assert not result.get("slots")
-    assert "Encontrei" not in result["content"]
-
-
-def test_hours_question_after_availability_gets_shop_hours(search_day, monkeypatch):
-    from barber_bot import assistant
-    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "")
-    result = assistant.run_agent(_after_availability(search_day, "Qual o horário de funcionamento?"), session_id="hours-test")
-    assert "segunda a sábado" in result["content"]
-    assert not result.get("slots")
-
-
-@pytest.mark.parametrize("follow_up", ["amanhã", "e na sexta?", "pode ser sábado", "com o Diego", "à tarde",
-                                       "depois das 15h", "sem preferência", "tem vaga mais cedo?"])
-def test_short_follow_ups_still_continue_the_search(conversation_db, follow_up):
-    from barber_bot.availability_conversation import availability_answer
-    answer = availability_answer([
-        {"role": "user", "content": "Quero agendar corte"},
-        {"role": "assistant", "content": "Para qual dia você quer Corte de Cabelo?"},
-        {"role": "user", "content": follow_up},
-    ])
-    assert answer is not None
-    assert answer["intent"] == "consultar_disponibilidade"

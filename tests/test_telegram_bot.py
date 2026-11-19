@@ -224,7 +224,7 @@ def test_private_codes_are_masked_before_model_and_history_storage(telegram, mon
     bot._save_state("123", {"step": "chat", "history": [{"role": "user", "content": private_code}]})
     text("Consulte " + private_code)
     assert private_code not in captured[0][0]
-    assert captured[0][1]["session_id"] == "telegram:123"
+    assert captured[0][1] == {"channel": "telegram"}
     assert private_code not in json.dumps(bot._load_state("123"))
     assert private_code not in sent[-1]["text"]
     with db.connect() as conn:
@@ -532,7 +532,7 @@ def test_natural_reschedule_keeps_original_until_final_confirmation(telegram, mo
         pytest.fail("Reservation management must not call the model")
 
     monkeypatch.setattr(bot, "run_agent", unexpected_model)
-    # A leftover guided booking menu must not swallow the textual management.
+    # Um menu antigo não deve bloquear pedidos de alteração por texto.
     text("/agendar")
     text(f"quero remarcar minha reserva para {day:%d/%m/%Y}")
     assert "opções para remarcar" in sent[-1]["text"]
