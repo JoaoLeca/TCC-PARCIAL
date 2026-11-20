@@ -19,7 +19,7 @@ from barber_bot.conversation import sanitize_chat_messages
 from barber_bot.support import SupportError, create_support_request, get_customer_request, update_support_contact
 from barber_bot.telemetry import record_booking, record_handoff, record_interaction
 from barber_bot.customer_access import list_owned_bookings, require_owned_booking, public_appointment
-from barber_bot.booking_conversation import handle_booking_message
+from barber_bot.booking_conversation import handle_booking_message, has_pending_request
 from barber_bot.customer_recovery import RecoveryError, start_recovery, verify_recovery, begin_chat_recovery, handle_chat_recovery
 
 @asynccontextmanager
@@ -302,6 +302,11 @@ def chat(payload: ChatIn):
         latest = next((message.content for message in reversed(payload.messages) if message.role == "user"), "")
         value = payload.recovery_input.get_secret_value() if payload.recovery_input else latest
         result = handle_chat_recovery(value, owner_key)
+        if result is None and has_pending_request("web", owner_key):
+            # Respostas a uma remarcação ou cancelamento em andamento (número da opção, data, sim, não)
+            # seguem direto para o fluxo determinístico, sem depender de o modelo chamar a ferramenta.
+            pending_text = next((message["content"] for message in reversed(messages) if message["role"] == "user"), "")
+            result = handle_booking_message([{"role": "user", "content": pending_text}], "web", owner_key)
         if result is None:
             def booking_handler(request_text):
                 return handle_booking_message([{"role": "user", "content": request_text}], "web", owner_key)

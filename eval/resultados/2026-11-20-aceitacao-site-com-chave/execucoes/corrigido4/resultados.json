@@ -1,0 +1,756 @@
+{
+  "meta": {
+    "inicio": "2026-11-20T15:52:21.387Z",
+    "datas": {
+      "primeira": "2026-11-21",
+      "segunda": "2026-11-23",
+      "terca": "2026-11-24",
+      "quarta": "2026-11-25",
+      "sabado": "2026-11-21"
+    },
+    "fim": "2026-11-20T15:56:10.699Z"
+  },
+  "results": [
+    {
+      "id": "A05",
+      "title": "Conversa livre sem chave OpenAI",
+      "expected": "Sem a chave, toda mensagem livre informa que o atendimento virtual não está habilitado.",
+      "steps": [
+        "Execute este cenário em uma instância separada, sem OPENAI_API_KEY."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Execute este cenário em uma instância separada, sem OPENAI_API_KEY."
+    },
+    {
+      "id": "A06",
+      "title": "Restrições de horário com IA",
+      "expected": "A IA interpreta preferências e a API retorna apenas vagas reais que respeitam expediente, duração e bloqueios.",
+      "steps": [
+        "“Quero corte dia 24/11 depois das 15h” → 15:30–16:10 Alecio; 16:00–16:40 Alecio; 16:30–17:10 Alecio",
+        "“Quero corte dia 24/11 a partir das 15h” → 15:00–15:40 Alecio; 15:30–16:10 Alecio; 16:00–16:40 Alecio",
+        "“Quero corte dia 24/11 antes das 15h” → 08:00–08:40 Alecio; 08:30–09:10 Alecio; 09:00–09:40 Alecio",
+        "“Quero corte dia 24/11 entre 10h e 12h” → 10:00–10:40 Alecio; 10:30–11:10 Alecio; 11:00–11:40 Alecio",
+        "“Quero corte dia 24/11 às 15h” → 15:00–15:40 Alecio",
+        "“Quero pintar o cabelo dia 24/11 antes das 15h” → 08:00–10:00 Alecio; 08:30–10:30 Alecio; 09:00–11:00 Alecio",
+        "“Quero corte no último horário de sábado” → 21/11 19:00 Rafael; 21/11 18:30 Rafael; 21/11 18:00 Rafael",
+        "Maior início real no sábado, segundo /availability: 19:00",
+        "Bloqueio das 18h às 20h de sábado para todos os barbeiros (3 bloqueios criados pela API da equipe)",
+        "Repetição com o bloqueio → 17:00–17:40 Rafael; 16:30–17:10 Rafael; 16:00–16:40 Rafael"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "“depois das 15h”: opções reais na data pedida e dentro da restrição"
+        },
+        {
+          "ok": true,
+          "text": "“a partir das 15h”: opções reais na data pedida e dentro da restrição"
+        },
+        {
+          "ok": true,
+          "text": "“antes das 15h”: opções reais na data pedida e dentro da restrição"
+        },
+        {
+          "ok": true,
+          "text": "“entre 10h e 12h”: opções reais na data pedida e dentro da restrição"
+        },
+        {
+          "ok": true,
+          "text": "“às 15h”: opções reais na data pedida e dentro da restrição"
+        },
+        {
+          "ok": true,
+          "text": "Pintura (120 min) antes das 15h só oferece horários que terminam até 12h, sem atravessar o almoço"
+        },
+        {
+          "ok": true,
+          "text": "Último horário de sábado: opções do sábado, começando pelo maior início real e em ordem decrescente"
+        },
+        {
+          "ok": true,
+          "text": "Com o bloqueio, o último horário termina até 18h"
+        },
+        {
+          "ok": true,
+          "text": "Nenhuma reserva criada pelas consultas"
+        }
+      ],
+      "evidence": [],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A07",
+      "title": "Mudança de contexto temporal",
+      "expected": "A preferência mais recente substitui a anterior; trocar só o profissional mantém a restrição; horários inválidos pedem esclarecimento.",
+      "steps": [
+        "“Quero corte dia 24/11 pela manhã” → “depois das 15h” → 15:30 Alecio; 16:00 Alecio; 16:30 Alecio",
+        "“Quero corte dia 24/11 depois das 15h” → “pela manhã” → 08:00 Alecio; 08:30 Alecio; 09:00 Alecio",
+        "“Quero corte dia 24/11 às 15h” → “à tarde” → 13:30 Alecio; 14:00 Alecio; 14:30 Alecio",
+        "“Quero corte dia 24/11 às 15h” → “com o Caetano” → 15:00 Caetano",
+        "“Quero corte dia 24/11 às 25h” → Não consigo agendar para **25h**, porque esse horário não existe.\n\nSe quiser, me diga um horário válido para *",
+        "“Quero corte dia 24/11 entre 16h e 10h” → 10:00 Alecio; 10:30 Alecio; 11:00 Alecio",
+        "“Quero corte dia 24/11 por volta das 15h” → Para **Corte de Cabelo** no dia **24/11**, a preferência de horário ficou ambígua.\n\nVocê pode me dizer um horá"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "“pela manhã” seguido de “depois das 15h”: vale a restrição mais recente"
+        },
+        {
+          "ok": true,
+          "text": "Ordem inversa: vale o período da manhã"
+        },
+        {
+          "ok": true,
+          "text": "“às 15h” trocado por “à tarde”: opções da tarde, não apenas 15h"
+        },
+        {
+          "ok": true,
+          "text": "Trocar só o profissional mantém “às 15h”"
+        },
+        {
+          "ok": true,
+          "text": "“às 25h”: pede esclarecimento sem oferecer vagas"
+        },
+        {
+          "ok": false,
+          "text": "“entre 16h e 10h”: pede esclarecimento sem oferecer vagas"
+        },
+        {
+          "ok": false,
+          "text": "“por volta das 15h”: pede esclarecimento sem oferecer vagas"
+        },
+        {
+          "ok": true,
+          "text": "Nenhuma reserva criada pelas consultas"
+        }
+      ],
+      "evidence": [],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A02",
+      "title": "Sem vagas e alternativas",
+      "expected": "Não promete nem grava horário ocupado; oferece outra data ou profissional existente; com a janela cheia, informa a indisponibilidade sem inventar vaga.",
+      "steps": [
+        "Cliente: “Quero corte com o Rafael dia 25/11 à tarde” → Assistente: “Para corte de cabelo com o Rafael no dia 25/11 à tarde, não encontrei vagas com ele, mas há estas alternativas disponíveis na mesma data com o Alecio: 25/11 · 13:30 · Alecio 25/11 · 14:00 · Alecio 25/11 · 14:30 · Alecio ”",
+        "Alternativas exibidas: 25/11 · 13:30 · Alecio; 25/11 · 14:00 · Alecio; 25/11 · 14:30 · Alecio",
+        "Cliente: “Quero corte amanhã” → Assistente: “Não há vagas disponíveis para corte de cabelo amanhã. Se quiser, posso te ajudar a verificar outro dia ou outro profissional.”",
+        "Aba Agendar: Não há horários para essa escolha no período exibido."
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "Dia 25/11 inteiro bloqueado para o Rafael pela API da equipe"
+        },
+        {
+          "ok": true,
+          "text": "A disponibilidade do Rafael na data ficou vazia"
+        },
+        {
+          "ok": true,
+          "text": "O assistente informa que a combinação pedida não tem vagas"
+        },
+        {
+          "ok": true,
+          "text": "Cada alternativa existe de fato na disponibilidade (outro profissional ou outro dia)"
+        },
+        {
+          "ok": true,
+          "text": "Consultar alternativas não cria reserva"
+        },
+        {
+          "ok": true,
+          "text": "Janela de 21/11 a 27/11 bloqueada para os 3 barbeiros"
+        },
+        {
+          "ok": true,
+          "text": "Com a janela cheia, informa a indisponibilidade sem inventar vaga nem exibir sugestões"
+        },
+        {
+          "ok": true,
+          "text": "A aba Agendar não exibe horários com a janela bloqueada"
+        },
+        {
+          "ok": true,
+          "text": "Nenhuma reserva criada no cenário"
+        }
+      ],
+      "evidence": [
+        "evidencias/A02_alternativas.png",
+        "evidencias/A02_janela_cheia.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_alternativas": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A03",
+      "title": "Solicitação de retorno da equipe",
+      "expected": "A frase só oferece ajuda; abrir ou abandonar o formulário não cria protocolo; campos vazios impedem o envio; só o envio válido cria o protocolo e registra escalated.",
+      "steps": [
+        "Cliente: “Quero falar com uma pessoa da equipe sobre uma reclamação” → Assistente: “Claro — para falar com uma pessoa da equipe sobre sua reclamação, use Falar com a equipe no site ou envie /atendente no Telegram.”"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "O assistente orienta a usar Falar com a equipe"
+        },
+        {
+          "ok": true,
+          "text": "A frase apenas orienta o contato, sem criar chamado nem escalated"
+        },
+        {
+          "ok": true,
+          "text": "Abrir e abandonar o formulário não cria chamado"
+        },
+        {
+          "ok": true,
+          "text": "Envio sem contato é recusado com orientação"
+        },
+        {
+          "ok": true,
+          "text": "Envio inválido não cria chamado"
+        },
+        {
+          "ok": true,
+          "text": "A interface informa o retorno por telefone e que o assistente continua virtual"
+        },
+        {
+          "ok": true,
+          "text": "O envio válido cria um chamado e um evento escalated"
+        },
+        {
+          "ok": true,
+          "text": "O chamado fica aberto na fila da equipe, canal web"
+        }
+      ],
+      "evidence": [
+        "evidencias/A03_retorno_equipe.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_frase": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_abandonar": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_vazio": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 1,
+          "ev_reserva": 0,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A01",
+      "title": "Reserva confirmada (site)",
+      "expected": "Antes da confirmação não existe reserva nova; depois existe exatamente uma, com preço e duração do resumo, e um evento booking_confirmed.",
+      "steps": [
+        "Agendar: serviço Corte de Cabelo, barbeiro Sem preferência, primeiro dia aberto (21/11)",
+        "Horário 15:00 com Caetano",
+        "Resumo: 3. Revise e confirme Corte de Cabelo com Caetano Sábado, 21/11/2026 às 15h00 · 40 min · R$ 50,00 Confirmar agendamento",
+        "Parte do Telegram (/agendar): não executada nesta rodada, pois depende do token do bot"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "Antes de confirmar não existe reserva nova"
+        },
+        {
+          "ok": true,
+          "text": "Depois da confirmação existe exatamente uma reserva nova e um evento booking_confirmed"
+        },
+        {
+          "ok": true,
+          "text": "Reserva #1 gravada com Corte de Cabelo, 15:00, R$ 50,00 e 40 min, como no resumo"
+        },
+        {
+          "ok": true,
+          "text": "A reserva ficou vinculada à sessão do site (booking_owners, canal web)"
+        },
+        {
+          "ok": true,
+          "text": "Meus horários mostra a reserva na mesma sessão, sem pedir telefone ou código"
+        }
+      ],
+      "evidence": [
+        "evidencias/A01_revisao.png",
+        "evidencias/A01_comprovante.png",
+        "evidencias/A01_meus_horarios.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 1,
+          "ev_reserva": 0,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "antes_de_confirmar": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 1,
+          "ev_reserva": 0,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 1,
+          "confirmadas": 1,
+          "chamados": 1,
+          "ev_reserva": 1,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A08",
+      "title": "Sugestão clicável e confirmação",
+      "expected": "O clique revalida catálogo e disponibilidade e preenche a revisão; nenhum clique cria reserva; só a confirmação grava.",
+      "steps": [
+        "Cliente: “Quero agendar corte dia 23/11 à tarde” → Assistente: “Tenho 3 opções para corte de cabelo no dia 23/11 à tarde: 23/11 · 13:30 · Alecio 23/11 · 14:00 · Alecio 23/11 · 14:30 · Alecio Escolha uma opção para revisar e confirmar a reserva.”",
+        "Sugestões: 23/11 · 13:30 · Alecio; 23/11 · 14:00 · Alecio; 23/11 · 14:30 · Alecio",
+        "Preço do corte restaurado para R$ 50,00",
+        "Cliente: “Quero agendar corte dia 23/11 à tarde” → Assistente: “Encontrei estas 3 opções para corte de cabelo no dia 23/11 à tarde: 23/11 · 13:30 · Caetano 23/11 · 14:00 · Caetano 23/11 · 14:30 · Caetano Escolha uma opção para revisar e confirmar a reserva.”",
+        "Nova consulta: 23/11 · 13:30 · Caetano; 23/11 · 14:00 · Caetano; 23/11 · 14:30 · Caetano",
+        "Reserva #3 criada: 23/11 13:30 com Caetano, R$ 50"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "O chat apresenta sugestões clicáveis"
+        },
+        {
+          "ok": true,
+          "text": "O clique abre Agendar com 13:30 e Alecio preenchidos para revisão"
+        },
+        {
+          "ok": true,
+          "text": "O clique não cria reserva"
+        },
+        {
+          "ok": true,
+          "text": "Outra sessão ocupa a vaga 14:00 com Alecio pela API"
+        },
+        {
+          "ok": true,
+          "text": "A sugestão antiga é revalidada e o site avisa que a vaga não está mais disponível"
+        },
+        {
+          "ok": true,
+          "text": "Clicar na sugestão antiga não cria reserva"
+        },
+        {
+          "ok": true,
+          "text": "O dono altera o preço do corte para R$ 55,00"
+        },
+        {
+          "ok": true,
+          "text": "Com o preço alterado, a sugestão antiga não abre a revisão e o site orienta nova consulta"
+        },
+        {
+          "ok": true,
+          "text": "Clicar na sugestão com preço desatualizado não cria reserva"
+        },
+        {
+          "ok": true,
+          "text": "A nova consulta não oferece mais a vaga ocupada (14:00 com Alecio)"
+        },
+        {
+          "ok": true,
+          "text": "A sugestão atualizada abre a revisão de 13:30 com Caetano"
+        },
+        {
+          "ok": true,
+          "text": "Nenhum dos cliques criou reserva"
+        },
+        {
+          "ok": true,
+          "text": "Somente a confirmação explícita cria a reserva (uma única)"
+        }
+      ],
+      "evidence": [
+        "evidencias/A08_sugestao_preenchida.png",
+        "evidencias/A08_vaga_ocupada.png",
+        "evidencias/A08_preco_alterado.png",
+        "evidencias/A08_confirmada.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 1,
+          "confirmadas": 1,
+          "chamados": 1,
+          "ev_reserva": 1,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_clique": {
+          "reservas": 1,
+          "confirmadas": 1,
+          "chamados": 1,
+          "ev_reserva": 1,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_ocupar": {
+          "reservas": 2,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 2,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_clique_ocupado": {
+          "reservas": 2,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 2,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "antes_clique_preco": {
+          "reservas": 2,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 2,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "apos_clique_preco": {
+          "reservas": 2,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 2,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "antes_de_confirmar": {
+          "reservas": 2,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 2,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 3,
+          "confirmadas": 3,
+          "chamados": 1,
+          "ev_reserva": 3,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A09",
+      "title": "Consulta e alteração de reservas por mensagem",
+      "expected": "Só reservas da sessão; com mais de uma, pergunta qual; nada muda antes da confirmação final separada; “não” mantém a reserva; “sim” aplica a alteração.",
+      "steps": [
+        "Cliente: “meus agendamentos” → Assistente: “Suas reservas vinculadas a esta conversa: reserva #1: Corte de Cabelo com Caetano, 21/11/2026 das 15:00 às 15:40, R$ 50,00 reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00 Se quiser, peça ”",
+        "Cliente: “quero remarcar minha reserva” → Assistente: “Qual reserva você quer remarcar? Escolha o número da lista ou escreva reserva #id: reserva #1: Corte de Cabelo com Caetano, 21/11/2026 das 15:00 às 15:40, R$ 50,00 reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das ”",
+        "Cliente: “reserva #1” → Assistente: “Para qual nova data você quer remarcar? Pode dizer amanhã ou informar dia/mês; se quiser, diga também o horário ou período do dia.”",
+        "Cliente: “24/11 à tarde” → Assistente: “Encontrei estas opções para remarcar: 24/11/2026 às 13:30 com Caetano 24/11/2026 às 14:00 com Caetano 24/11/2026 às 14:30 com Caetano Escolha pelo número ou escreva o horário. Depois vou pedir sua confirmação final.”",
+        "Cliente: “1” → Assistente: “Reserva atual: reserva #1: Corte de Cabelo com Caetano, 21/11/2026 das 15:00 às 15:40, R$ 50,00. Novo horário: 24/11/2026 das 13:30 às 14:10 com Caetano. O serviço e o valor permanecem Corte de Cabelo, R$ 50,00. Confirma”",
+        "Cliente: “sim” → Assistente: “Remarcação confirmada: reserva #1: Corte de Cabelo com Caetano, 24/11/2026 das 13:30 às 14:10, R$ 50,00.”",
+        "Cliente: “quero cancelar minha reserva” → Assistente: “Qual reserva você quer cancelar? Escolha o número da lista ou escreva reserva #id: reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00 reserva #1: Corte de Cabelo com Caetano, 24/11/2026 das ”",
+        "Cliente: “reserva #3” → Assistente: “Você quer cancelar a reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00. Confirma o cancelamento? Responda sim ou não.”",
+        "Cliente: “não” → Assistente: “Tudo bem, encerrei este pedido. Sua reserva não foi alterada.”",
+        "Cliente: “quero cancelar minha reserva” → Assistente: “Qual reserva você quer cancelar? Escolha o número da lista ou escreva reserva #id: reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00 reserva #1: Corte de Cabelo com Caetano, 24/11/2026 das ”",
+        "Cliente: “reserva #3” → Assistente: “Você quer cancelar a reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00. Confirma o cancelamento? Responda sim ou não.”",
+        "Cliente: “sim” → Assistente: “Cancelamento confirmado da reserva #3: Corte de Cabelo com Caetano, 23/11/2026 das 13:30 às 14:10, R$ 50,00.”"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "A consulta lista as duas reservas desta sessão"
+        },
+        {
+          "ok": true,
+          "text": "Com duas reservas, o assistente pergunta qual delas alterar"
+        },
+        {
+          "ok": true,
+          "text": "O assistente oferece horários reais para a remarcação"
+        },
+        {
+          "ok": true,
+          "text": "Depois da escolha, pede confirmação final separada"
+        },
+        {
+          "ok": true,
+          "text": "Antes do “sim”, a reserva não muda"
+        },
+        {
+          "ok": true,
+          "text": "Com o “sim”, a reserva #1 passa para 24/11 às 13:30"
+        },
+        {
+          "ok": true,
+          "text": "O cancelamento apresenta a reserva e pede confirmação"
+        },
+        {
+          "ok": true,
+          "text": "Com o “não”, a reserva continua confirmada"
+        },
+        {
+          "ok": true,
+          "text": "Com o “sim”, a reserva #3 é cancelada"
+        },
+        {
+          "ok": true,
+          "text": "Meus horários reflete as alterações feitas por mensagem"
+        },
+        {
+          "ok": true,
+          "text": "Nenhuma reserva nova foi criada pelas alterações"
+        }
+      ],
+      "evidence": [
+        "evidencias/A09_remarcada.png",
+        "evidencias/A09_cancelada.png",
+        "evidencias/A09_meus_horarios.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 3,
+          "confirmadas": 3,
+          "chamados": 1,
+          "ev_reserva": 3,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 3,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 3,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A10",
+      "title": "Isolamento entre sessões e recuperação sem o bot",
+      "expected": "Outra sessão não vê nem altera as reservas; a recuperação informa que o Telegram não está configurado, sem simular envio.",
+      "steps": [
+        "Cliente: “quero cancelar minha reserva” → Assistente: “Posso localizar sua reserva sem precisar da equipe. Qual é o telefone completo com DDD usado no agendamento? Vou confirmar seu acesso pelo Telegram.”",
+        "Cliente: “16900000101” → Assistente: “A verificação pelo Telegram ainda não está configurada nesta instalação.”"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "Uma sessão nova não vê as reservas de outra sessão"
+        },
+        {
+          "ok": true,
+          "text": "Pedido de cancelamento em outra sessão inicia a verificação pelo telefone no Telegram"
+        },
+        {
+          "ok": true,
+          "text": "Sem o bot configurado, o chat informa que a verificação não está disponível, sem simular envio"
+        },
+        {
+          "ok": true,
+          "text": "A reserva da outra sessão continua confirmada"
+        },
+        {
+          "ok": true,
+          "text": "Sem o token, o site informa que a verificação pelo Telegram não está configurada"
+        },
+        {
+          "ok": true,
+          "text": "Nenhum desafio ou código de recuperação é criado sem o bot"
+        }
+      ],
+      "evidence": [
+        "evidencias/A10_chat_outra_sessao.png",
+        "evidencias/A10_recuperacao_sem_bot.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 3,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 3,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 3,
+          "confirmadas": 2,
+          "chamados": 1,
+          "ev_reserva": 3,
+          "ev_escalado": 1,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A04",
+      "title": "Botões antigos do Telegram",
+      "expected": "O menu antigo não altera a escolha nem cria reserva; a confirmação repetida não duplica reserva ou evento.",
+      "steps": [],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Não executado: depende do token do bot e de um aplicativo Telegram (canal coberto apenas pelos testes automatizados com transporte simulado)."
+    }
+  ]
+}

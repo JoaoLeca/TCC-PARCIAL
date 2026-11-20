@@ -297,11 +297,13 @@ await run("A07", "Mudança de contexto temporal", "A preferência mais recente s
   r = await conversation("as15-tarde", [`Quero corte dia ${dd} às 15h`, "à tarde"]);
   check(r.slots.length && r.slots.every((s) => minutes(s.starts_at) >= 720 && minutes(s.starts_at) < 1080) && r.slots.some((s) => minutes(s.starts_at) !== 900),
     "“às 15h” trocado por “à tarde”: opções da tarde, não apenas 15h");
-  r = await conversation("as15-diego", [`Quero corte dia ${dd} às 15h`, "com o Diego"]);
-  check(r.slots.length && r.slots.every((s) => minutes(s.starts_at) === 900 && s.barber === "Diego"), "Trocar só o profissional mantém “às 15h”");
+  r = await conversation("as15-caetano", [`Quero corte dia ${dd} às 15h`, "com o Caetano"]);
+  check(r.slots.length && r.slots.every((s) => minutes(s.starts_at) === 900 && s.barber === "Caetano"), "Trocar só o profissional mantém “às 15h”");
   for (const expr of ["às 25h", "entre 16h e 10h", "por volta das 15h"]) {
     r = await conversation(`invalido-${expr}`, [`Quero corte dia ${dd} ${expr}`]);
-    check(!r.slots.length && /interpretar/i.test(r.answer), `“${expr}”: pede esclarecimento sem oferecer vagas`);
+    // Com o agente, a redação varia: o esclarecimento é reconhecido por uma pergunta ou um pedido de novo horário,
+    // sem opções oferecidas.
+    check(!r.slots.length && /\?|me diga|informe|qual hor|prefere/i.test(r.answer), `“${expr}”: pede esclarecimento sem oferecer vagas`);
   }
   const after = snapshot("depois");
   check(after.reservas === before.reservas, "Nenhuma reserva criada pelas consultas");
@@ -318,7 +320,7 @@ await run("A02", "Sem vagas e alternativas", "Não promete nem grava horário oc
   check(rafaelSlots.length === 0, "A disponibilidade do Rafael na data ficou vazia");
   await newSession(); await tab("Conversar");
   const answer = await chat(`Quero corte com o Rafael dia ${dd} à tarde`);
-  check(/Não encontrei a combinação pedida/.test(answer), "O assistente informa que a combinação pedida não tem vagas");
+  check(/Rafael/.test(answer) && /\b(não|sem)\b[^.]{0,80}(vaga|horário|disponib|atend)/i.test(answer), "O assistente informa que a combinação pedida não tem vagas");
   const suggestions = await evaluate(`[...document.querySelectorAll('.st-key-tab_chat_history button')].map(b => b.innerText.trim()).filter(t => /\\d{2}\\/\\d{2} · \\d{2}:\\d{2} · /.test(t))`);
   step(`Alternativas exibidas: ${suggestions.join("; ")}`);
   const altOk = [];
@@ -340,8 +342,11 @@ await run("A02", "Sem vagas e alternativas", "Não promete nem grava horário oc
     if (res.status === 201) ids.push(res.data.id);
   }
   check(ids.length === barbers.length, `Janela de ${fmt(window7[0])} a ${fmt(window7[6])} bloqueada para os ${barbers.length} barbeiros`);
+  const buttonsBefore = await evaluate(`document.querySelectorAll('.st-key-tab_chat_history button').length`);
   const full = await chat("Quero corte amanhã");
-  check(/Não encontrei vagas/.test(full) && !/\d{2}\/\d{2} às/.test(full), "Com a janela cheia, informa a indisponibilidade sem inventar vaga");
+  const buttonsAfter = await evaluate(`document.querySelectorAll('.st-key-tab_chat_history button').length`);
+  check(/\b(não|sem)\b[^.]{0,80}(vaga|horário|disponib)/i.test(full) && !/\d{1,2}(:\d{2}|h\d{2})/.test(full) && buttonsAfter === buttonsBefore,
+    "Com a janela cheia, informa a indisponibilidade sem inventar vaga nem exibir sugestões");
   await shot("A02_janela_cheia");
   await tab("Agendar");
   await click("button", "Atualizar disponibilidade").catch(() => {});
@@ -360,8 +365,9 @@ await run("A03", "Solicitação de retorno da equipe", "A frase só oferece ajud
   const answer = await chat("Quero falar com uma pessoa da equipe sobre uma reclamação");
   check(/Falar com a equipe/.test(answer), "O assistente orienta a usar Falar com a equipe");
   let now = snapshot("apos_frase");
-  check(now.chamados === before.chamados && now.ev_escalado === before.ev_escalado && now.ev_oferta === before.ev_oferta + 1,
-    "A frase registra apenas a oferta (offered), sem chamado nem escalated");
+  // Na versão com o agente, a oferta de contato é uma resposta comum (não há mais o evento offered).
+  check(now.chamados === before.chamados && now.ev_escalado === before.ev_escalado,
+    "A frase apenas orienta o contato, sem criar chamado nem escalated");
   await click(".st-key-tab_human_request button", "Falar com a equipe");
   await click("button", "Voltar");
   now = snapshot("apos_abandonar");
@@ -499,11 +505,13 @@ await run("A09", "Consulta e alteração de reservas por mensagem", "Só reserva
   let a = await chat("quero remarcar minha reserva");
   check(/qual/i.test(a), "Com duas reservas, o assistente pergunta qual delas alterar");
   a = await chat(`reserva #${bookingSession.first}`);
-  if (/Para qual nova data/i.test(a)) a = await chat(`${fmt(D_TUE)} à tarde`);
-  check(/Encontrei estas opções para remarcar/.test(a), "O assistente oferece horários reais para a remarcação");
+  // O agente repete a resposta do fluxo de reservas, mas pode ajustar a redação: os horários são reconhecidos pelo formato.
+  const OPTION = /\d{1,2}\/\d{1,2}(\/\d{4})?[^\n]{0,15}\d{1,2}(:\d{2}|h\d{0,2})/;
+  if (!OPTION.test(a)) a = await chat(`${fmt(D_TUE)} à tarde`);
+  check(OPTION.test(a), "O assistente oferece horários reais para a remarcação");
   const firstBefore = one("SELECT starts_at, status FROM appointments WHERE id=?", bookingSession.first);
   a = await chat("1");
-  check(/Confirma a remarcação\? Responda sim ou não/.test(a), "Depois da escolha, pede confirmação final separada");
+  check(/confirm/i.test(a) && /\bsim\b/i.test(a), "Depois da escolha, pede confirmação final separada");
   check(one("SELECT starts_at FROM appointments WHERE id=?", bookingSession.first).starts_at === firstBefore.starts_at, "Antes do “sim”, a reserva não muda");
   a = await chat("sim");
   const moved = one("SELECT starts_at, status FROM appointments WHERE id=?", bookingSession.first);
@@ -512,7 +520,7 @@ await run("A09", "Consulta e alteração de reservas por mensagem", "Só reserva
   await shot("A09_remarcada");
   a = await chat("quero cancelar minha reserva");
   if (/qual/i.test(a)) a = await chat(`reserva #${bookingSession.second}`);
-  check(/Confirma o cancelamento\? Responda sim ou não/.test(a), "O cancelamento apresenta a reserva e pede confirmação");
+  check(/confirm/i.test(a) && /\bsim\b/i.test(a), "O cancelamento apresenta a reserva e pede confirmação");
   a = await chat("não");
   check(one("SELECT status FROM appointments WHERE id=?", bookingSession.second).status === "confirmed", "Com o “não”, a reserva continua confirmada");
   a = await chat("quero cancelar minha reserva");
