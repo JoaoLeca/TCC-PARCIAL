@@ -202,7 +202,7 @@ def test_failed_receipt_can_be_retried_without_creating_a_second_booking(telegra
     callback(confirm)
     receipt = next(item["text"] for item in reversed(sent) if "Agendamento confirmado" in item["text"])
     assert "Identificação da reserva" not in receipt and "Protocolo: #1" in receipt
-    assert "Para remarcar ou cancelar, escreva seu pedido nesta conversa." in receipt
+    assert "Para remarcar ou cancelar, escreva seu pedido aqui." in receipt
     assert "BI-" not in receipt
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM appointments").fetchone()[0] == 1
@@ -466,10 +466,11 @@ def test_support_status_does_not_expose_other_chat_or_channel_or_create_ticket(t
         assert conn.execute("SELECT count(*) FROM interaction_logs").fetchone()[0] == 0
 
 
-def test_support_status_command_is_registered_and_described_in_help(telegram, monkeypatch):
+def test_support_status_command_is_registered_with_description(telegram, monkeypatch):
     _, sent, _ = telegram
     text("/help")
-    assert "/atendimento" in sent[-1]["text"]
+    buttons = [button["text"] for row in sent[-1]["reply_markup"]["keyboard"] for button in row]
+    assert "🙋 Falar com a equipe" in buttons
     registered = []
     def api(method, payload=None, **kwargs):
         if method == "getMe":
@@ -483,7 +484,7 @@ def test_support_status_command_is_registered_and_described_in_help(telegram, mo
     monkeypatch.setattr(bot, "TELEGRAM_BOT_TOKEN", "offline-token")
     monkeypatch.setattr(bot, "telegram_call", api)
     bot.main()
-    assert any(command["command"] == "atendimento" for command in registered)
+    assert any(command["command"] == "atendimento" and command["description"] for command in registered)
 
 
 def test_receipt_repeats_protocol_without_phone_suffix_or_private_code(telegram):
