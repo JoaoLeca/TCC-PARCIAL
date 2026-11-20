@@ -71,6 +71,24 @@ def _load(conn, channel, owner_hash):
     return state, False
 
 
+def has_pending_request(channel, owner_key):
+    """Indica se a conversa tem um cancelamento ou uma remarcação em andamento, ainda válidos."""
+    if not owner_key or not isinstance(owner_key, str):
+        return False
+    owner_hash = sha256(owner_key.encode("utf-8")).hexdigest()
+    with connect() as conn:
+        row = conn.execute("SELECT state_json,updated_at FROM booking_conversations WHERE channel=? AND owner_key_hash=?",
+                           (channel, owner_hash)).fetchone()
+    if not row:
+        return False
+    try:
+        updated = datetime.fromisoformat(row["updated_at"])
+        state = json.loads(row["state_json"])
+    except (ValueError, TypeError):
+        return False
+    return datetime.now(timezone.utc) - updated < PENDING_TTL and state.get("action") in ("cancel", "reschedule")
+
+
 def _save(conn, channel, owner_hash, state):
     conn.execute("""INSERT INTO booking_conversations(channel,owner_key_hash,state_json,updated_at) VALUES (?,?,?,?)
         ON CONFLICT(channel,owner_key_hash) DO UPDATE SET state_json=excluded.state_json,updated_at=excluded.updated_at""",

@@ -166,3 +166,90 @@ def test_exact_hour_outside_real_grid_does_not_fabricate_slots(search_day):
     assert answer["slots"] == []
     with db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM appointments").fetchone()[0] == 0
+
+
+def _block(barber_ids, first_day, last_day):
+    with db.connect() as conn:
+        for barber_id in barber_ids:
+            conn.execute("INSERT INTO schedule_blocks(barber_id,starts_at,ends_at,reason) VALUES (?,?,?,?)",
+                         (barber_id, f"{first_day}T00:00:00-03:00", f"{last_day + timedelta(days=1)}T00:00:00-03:00", "teste"))
+
+
+def _working_barbers(day):
+    from barber_bot.schedule import list_barbers
+    return [barber["id"] for barber in list_barbers() if day.weekday() in barber["working_days"]]
+
+
+def _minutes(slot):
+    start = datetime.fromisoformat(slot["starts_at"])
+    return start.hour * 60 + start.minute
+
+
+@pytest.mark.parametrize(("preference", "expected"), [
+    ("depois das 15h", ["15:30", "16:00", "16:30"]),
+    ("a partir das 15h", ["15:00", "15:30", "16:00"]),
+    ("à tarde", ["13:30", "14:00", "14:30"]),
+    ("último horário", ["19:00", "18:30", "18:00"]),
+    (None, ["08:00", "08:30", "09:00"]),
+])
+def test_agent_suggestions_follow_the_customer_time_preference(search_day, preference, expected):
+    from barber_bot.assistant import availability_suggestions
+    result = availability_suggestions(1, search_day, None, preference)
+    assert _times({"slots": result["sugestoes"]}) == expected
+    assert result["alternativa"] is None and result["observacao"] is None
+    if preference == "depois das 15h":
+        assert result["vagas"] and all(_minutes(slot) > 900 for slot in result["vagas"])
+
+
+@pytest.mark.parametrize("preference", ["por volta das 15h", "às 25h", "entre 16h e 10h"])
+def test_ambiguous_preference_returns_no_suggestions(search_day, preference):
+    from barber_bot.assistant import availability_suggestions
+    result = availability_suggestions(1, search_day, None, preference)
+    assert result["vagas"] == [] and result["sugestoes"] == []
+    assert "esclarecimento" in result["observacao"]
+
+
+def test_unavailable_barber_gets_another_professional_on_the_same_day(search_day):
+    from barber_bot.assistant import availability_suggestions
+    barber_id = _working_barbers(search_day)[0]
+    _block([barber_id], search_day, search_day)
+    result = availability_suggestions(1, search_day, barber_id, "à tarde")
+    assert result["alternativa"] == "outro profissional na mesma data"
+    assert result["sugestoes"] and all(
+        slot["barber_id"] != barber_id and slot["starts_at"].startswith(search_day.isoformat()) and 720 <= _minutes(slot) < 1080
+        for slot in result["sugestoes"])
+
+
+def test_full_day_moves_to_the_next_date_keeping_the_time_preference(search_day):
+    from barber_bot.assistant import availability_suggestions
+    _block(_working_barbers(search_day), search_day, search_day)
+    result = availability_suggestions(1, search_day, None, "depois das 15h")
+    assert result["alternativa"] == "outra data"
+    assert result["sugestoes"] and all(
+        slot["starts_at"][:10] > search_day.isoformat() and _minutes(slot) > 900 for slot in result["sugestoes"])
+
+
+def test_full_window_returns_no_suggestions(search_day):
+    from barber_bot.assistant import availability_suggestions
+    from barber_bot.config import MAX_BOOKING_DAYS
+    last_day = datetime.now(TZ).date() + timedelta(days=MAX_BOOKING_DAYS)
+    with db.connect() as conn:
+        barber_ids = [row["id"] for row in conn.execute("SELECT id FROM barbers")]
+    _block(barber_ids, datetime.now(TZ).date(), last_day)
+    result = availability_suggestions(1, search_day, None, None)
+    assert result["vagas"] == [] and result["sugestoes"] == [] and result["alternativa"] is None
+    assert "Não há vagas" in result["observacao"]
+
+
+def test_agent_tool_buttons_use_the_filtered_suggestions(search_day, monkeypatch):
+    import barber_bot.assistant as assistant
+    captured = {}
+    monkeypatch.setattr(assistant, "OPENAI_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(assistant, "create_agent", lambda model, tools, system_prompt: captured.setdefault("tools", tools))
+    runtime = {}
+    assistant.build_agent("web", runtime=runtime)
+    tool = next(item for item in captured["tools"] if item.name == "buscar_disponibilidade")
+    tool.invoke({"servico_id": 1, "data": search_day.isoformat(), "preferencia_horario": "depois das 15h"})
+    assert _times({"slots": runtime["booking_options"]["slots"]}) == ["15:30", "16:00", "16:30"]
+    tool.invoke({"servico_id": 1, "data": search_day.isoformat(), "preferencia_horario": "por volta das 15h"})
+    assert "booking_options" not in runtime

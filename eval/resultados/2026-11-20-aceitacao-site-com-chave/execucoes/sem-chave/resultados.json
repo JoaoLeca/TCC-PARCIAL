@@ -1,0 +1,239 @@
+{
+  "meta": {
+    "inicio": "2026-11-20T15:56:55.687Z",
+    "datas": {
+      "primeira": "2026-11-21",
+      "segunda": "2026-11-23",
+      "terca": "2026-11-24",
+      "quarta": "2026-11-25",
+      "sabado": "2026-11-21"
+    },
+    "fim": "2026-11-20T15:57:33.337Z"
+  },
+  "results": [
+    {
+      "id": "A05",
+      "title": "Conversa livre sem chave OpenAI",
+      "expected": "Sem a chave, toda mensagem livre informa que o atendimento virtual não está habilitado.",
+      "steps": [
+        "Cliente: “Quais formas de pagamento vocês aceitam?” → Assistente: “O atendimento virtual não está habilitado.”",
+        "Cliente: “Quanto custa o corte?” → Assistente: “O atendimento virtual não está habilitado.”",
+        "Cliente: “Tem horário para corte dia 24/11?” → Assistente: “O atendimento virtual não está habilitado.”",
+        "Cliente: “Qual a previsão do tempo para amanhã?” → Assistente: “O atendimento virtual não está habilitado.”"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "Sem a chave, perguntas de atendimento não recebem respostas locais simuladas"
+        },
+        {
+          "ok": true,
+          "text": "Cada pergunta indisponível é registrada na telemetria"
+        },
+        {
+          "ok": true,
+          "text": "Nenhuma reserva criada"
+        }
+      ],
+      "evidence": [
+        "evidencias/A05_ia_desativada.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 0,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 4,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A06",
+      "title": "Restrições de horário com IA",
+      "expected": "A IA interpreta preferências e a API retorna apenas vagas reais que respeitam expediente, duração e bloqueios.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A07",
+      "title": "Mudança de contexto temporal",
+      "expected": "A preferência mais recente substitui a anterior; trocar só o profissional mantém a restrição; horários inválidos pedem esclarecimento.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A02",
+      "title": "Sem vagas e alternativas",
+      "expected": "Não promete nem grava horário ocupado; oferece outra data ou profissional existente; com a janela cheia, informa a indisponibilidade sem inventar vaga.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A03",
+      "title": "Solicitação de retorno da equipe",
+      "expected": "A frase só oferece ajuda; abrir ou abandonar o formulário não cria protocolo; campos vazios impedem o envio; só o envio válido cria o protocolo e registra escalated.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A01",
+      "title": "Reserva confirmada (site)",
+      "expected": "Antes da confirmação não existe reserva nova; depois existe exatamente uma, com preço e duração do resumo, e um evento booking_confirmed.",
+      "steps": [
+        "Agendar: serviço Corte de Cabelo, barbeiro Sem preferência, primeiro dia aberto (21/11)",
+        "Horário 15:00 com Caetano",
+        "Resumo: 3. Revise e confirme Corte de Cabelo com Caetano Sábado, 21/11/2026 às 15h00 · 40 min · R$ 50,00 Confirmar agendamento",
+        "Parte do Telegram (/agendar): não executada nesta rodada, pois depende do token do bot"
+      ],
+      "checks": [
+        {
+          "ok": true,
+          "text": "Antes de confirmar não existe reserva nova"
+        },
+        {
+          "ok": true,
+          "text": "Depois da confirmação existe exatamente uma reserva nova e um evento booking_confirmed"
+        },
+        {
+          "ok": true,
+          "text": "Reserva #1 gravada com Corte de Cabelo, 15:00, R$ 50,00 e 40 min, como no resumo"
+        },
+        {
+          "ok": true,
+          "text": "A reserva ficou vinculada à sessão do site (booking_owners, canal web)"
+        },
+        {
+          "ok": true,
+          "text": "Meus horários mostra a reserva na mesma sessão, sem pedir telefone ou código"
+        }
+      ],
+      "evidence": [
+        "evidencias/A01_revisao.png",
+        "evidencias/A01_comprovante.png",
+        "evidencias/A01_meus_horarios.png"
+      ],
+      "counts": {
+        "antes": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 4,
+          "recuperacoes": 0
+        },
+        "antes_de_confirmar": {
+          "reservas": 0,
+          "confirmadas": 0,
+          "chamados": 0,
+          "ev_reserva": 0,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 4,
+          "recuperacoes": 0
+        },
+        "depois": {
+          "reservas": 1,
+          "confirmadas": 1,
+          "chamados": 0,
+          "ev_reserva": 1,
+          "ev_escalado": 0,
+          "ev_oferta": 0,
+          "ev_indisponivel": 4,
+          "recuperacoes": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "A08",
+      "title": "Sugestão clicável e confirmação",
+      "expected": "O clique revalida catálogo e disponibilidade e preenche a revisão; nenhum clique cria reserva; só a confirmação grava.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A09",
+      "title": "Consulta e alteração de reservas por mensagem",
+      "expected": "Só reservas da sessão; com mais de uma, pergunta qual; nada muda antes da confirmação final separada; “não” mantém a reserva; “sim” aplica a alteração.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A10",
+      "title": "Isolamento entre sessões e recuperação sem o bot",
+      "expected": "Outra sessão não vê nem altera as reservas; a recuperação informa que o Telegram não está configurado, sem simular envio.",
+      "steps": [
+        "Fora da seleção desta execução (AVAL_CENARIOS)."
+      ],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Fora da seleção desta execução (AVAL_CENARIOS)."
+    },
+    {
+      "id": "A04",
+      "title": "Botões antigos do Telegram",
+      "expected": "O menu antigo não altera a escolha nem cria reserva; a confirmação repetida não duplica reserva ou evento.",
+      "steps": [],
+      "checks": [],
+      "evidence": [],
+      "counts": {},
+      "error": null,
+      "notExecuted": "Não executado: depende do token do bot e de um aplicativo Telegram (canal coberto apenas pelos testes automatizados com transporte simulado)."
+    }
+  ]
+}

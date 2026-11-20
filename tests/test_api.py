@@ -226,14 +226,21 @@ def test_recovery_api_and_chat_restore_access_to_another_session_without_staff(c
 
 
 def test_chat_recovery_keeps_code_and_phone_out_of_model_and_logs(client, monkeypatch):
-    import barber_bot.assistant as assistant
-    if not assistant.OPENAI_API_KEY:
-        pytest.skip("A confirmação final da reserva pelo chat exige OPENAI_API_KEY.")
     import barber_bot.api as api
     import barber_bot.customer_recovery as recovery
     monkeypatch.setattr(recovery, "get_bot_username", lambda: "ImperialTesteBot")
     monkeypatch.setattr(recovery.secrets, "randbelow", lambda limit: 123456)
-    monkeypatch.setattr(api, "run_agent", lambda *a, **k: pytest.fail("Recovery must not call the model"))
+    model_calls = []
+
+    def agent(messages, *, booking_handler=None, **kwargs):
+        # O pedido e a confirmação passam pelo agente; telefone e código, nunca.
+        seen = str(messages) + str(kwargs)
+        assert not any(secret in seen for secret in ("16999990042", "123456", "000000"))
+        latest = next(message["content"] for message in reversed(messages) if message["role"] == "user")
+        model_calls.append(latest)
+        return booking_handler(latest)
+
+    monkeypatch.setattr(api, "run_agent", agent)
     owned_booking(client)
     token = "recovered-browser-" + "z" * 40
     def chat(text, private=None):
@@ -253,7 +260,10 @@ def test_chat_recovery_keeps_code_and_phone_out_of_model_and_logs(client, monkey
         assert conn.execute("SELECT status FROM appointments").fetchone()[0] == "confirmed"
         logs = str([tuple(row) for row in conn.execute("SELECT user_message FROM interaction_logs")])
         assert "123456" not in logs and "16999990042" not in logs and "000000" not in logs
+    assert model_calls == ["quero cancelar minha reserva"]
     assert "Cancelamento confirmado" in chat("sim")["answer"]
+    # A confirmação de um pedido pendente vai direto ao fluxo de reservas.
+    assert model_calls == ["quero cancelar minha reserva"]
 
 
 def test_recovery_links_are_removed_from_model_history_after_abort(client, monkeypatch):
@@ -344,3 +354,34 @@ def test_customer_support_status_hides_foreign_protocols_and_validates_input(cli
         response = client.post("/support/status", json=payload)
         assert response.status_code == 422
         assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_pending_booking_change_does_not_depend_on_the_model_calling_the_tool(client, monkeypatch):
+    import barber_bot.api as api
+    calls = []
+
+    def forgetful_agent(messages, *, booking_handler=None, **kwargs):
+        # Só o primeiro pedido passa pela ferramenta; depois o modelo "esquece" de chamá-la.
+        latest = next(message["content"] for message in reversed(messages) if message["role"] == "user")
+        calls.append(latest)
+        if len(calls) == 1:
+            return booking_handler(latest)
+        return {"content": "Para concluir, confirme em Agendar.", "intent": "conversa", "confidence": 1,
+                "tools_called": [], "outcome": "answered"}
+
+    monkeypatch.setattr(api, "run_agent", forgetful_agent)
+    token = "owner-" + "x" * 40
+    record = owned_booking(client, token)
+
+    def chat(text):
+        return client.post("/chat", json={"customer_token": token, "session_id": "pendente",
+                                          "messages": [{"role": "user", "content": text}]}).json()["answer"]
+
+    assert "Confirma o cancelamento" in chat("quero cancelar minha reserva")
+    assert "Cancelamento confirmado" in chat("sim")
+    assert calls == ["quero cancelar minha reserva"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT status FROM appointments WHERE id=?", (record["id"],)).fetchone()[0] == "cancelled"
+    # Sem pedido pendente, a conversa volta ao agente.
+    chat("Qual o endereço?")
+    assert calls[-1] == "Qual o endereço?"
