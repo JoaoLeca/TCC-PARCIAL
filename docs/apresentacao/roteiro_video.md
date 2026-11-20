@@ -23,7 +23,7 @@ Material para a apresentação do TCC e para o vídeo que o representante public
 | 11 | Barbeiros no Telegram: vínculo, avisos e agenda | João | 1 min |
 | 12 | Segurança e privacidade | João | 1 min |
 | 13 | Testes automatizados | Leonardo | 1,5 min |
-| 14 | Ensaios de aceitação e defeito corrigido | Leonardo | 1,5 min |
+| 14 | Ensaio com a IA real: defeitos corrigidos e resultados | Leonardo | 1,5 min |
 | 15 | Limitações e próximos passos | Caetano | 1,5 min |
 | 16 | Conclusão e perguntas | Leonardo | 1 min |
 
