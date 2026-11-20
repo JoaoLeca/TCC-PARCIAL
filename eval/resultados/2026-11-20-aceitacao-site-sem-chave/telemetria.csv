@@ -1,0 +1,6 @@
+session_id,created_at,intent,response_ms,channel,outcome,tools_called
+session_0ad35fa6c730bf13714bc3d3ba623bff4eb7d7140fa1a940f8b3dcb101f5c993,2026-11-20 13:34:21,indisponivel,3,web,unavailable,
+session_0ad35fa6c730bf13714bc3d3ba623bff4eb7d7140fa1a940f8b3dcb101f5c993,2026-11-20 13:34:24,indisponivel,9,web,unavailable,
+session_0ad35fa6c730bf13714bc3d3ba623bff4eb7d7140fa1a940f8b3dcb101f5c993,2026-11-20 13:34:26,indisponivel,9,web,unavailable,
+session_0ad35fa6c730bf13714bc3d3ba623bff4eb7d7140fa1a940f8b3dcb101f5c993,2026-11-20 13:34:29,indisponivel,7,web,unavailable,
+session_a0fc377229e881a8a9f0d863e46bb0fd4dd916538cff09a9f9b0afc186570a4a,2026-11-20 13:34:45,agendar,,web,booking_confirmed,create_appointment
