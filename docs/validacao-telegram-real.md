@@ -13,8 +13,8 @@ A API local e o site precisam estar ligados. Não é necessário contratar ou co
 1. Agendar pelo site e conferir o resumo e o comprovante baixado. Os quatro dígitos não devem aparecer como código.
 2. Sem fechar ou recarregar a página, abrir **Meus horários** e consultar a reserva.
 3. Remarcar pela tela e conferir a nova data. Pedir cancelamento e conferir que só acontece depois de confirmar.
-4. Fazer outra reserva e, no chat do site, escrever “quero ver meu agendamento”, “quero remarcar” ou “quero cancelar”. Conferir o resumo e a confirmação final.
-5. Testar serviços, preços e busca de vagas no chat, por exemplo “quero corte amanhã depois das 15h”. Esses pedidos guiados funcionam sem IA externa.
+4. Clicar em **Falar com a equipe**, enviar nome e telefone fictícios e conferir o chamado na área da equipe.
+5. Sem a chave da OpenAI, enviar qualquer pergunta no chat do site e conferir o aviso de que o atendimento virtual não está habilitado.
 6. Na área da equipe, conferir a agenda, os bloqueios e as reservas conforme as permissões da conta.
 
 **Atenção:** a sessão pode terminar ao fechar ou recarregar a página. A recuperação em uma sessão nova depende do Telegram configurado.
@@ -28,12 +28,21 @@ Preparar: preencher `TELEGRAM_BOT_TOKEN` apenas no `.env` local e iniciar o bot 
 - [ ] Pedir cancelamento e responder “não”. A reserva deve continuar ativa. Repetir o pedido e responder “sim”. A reserva deve ser cancelada.
 - [ ] Abrir o site em uma sessão nova. Em **Meus horários**, informar o telefone, abrir o bot e confirmar o contato. Receber o código temporário e digitá-lo no site para recuperar a reserva.
 - [ ] Conferir que contato de outra pessoa, código errado, expirado ou reutilizado não liberam acesso.
+- [ ] Mesmo sem a chave da OpenAI, pedir no bot “quero cancelar minha reserva”: no Telegram, a consulta e a alteração por mensagem funcionam sem a IA.
+- [ ] Na área da equipe, com a conta de dono, cadastrar em **Informações e escala** o telefone do Telegram de um barbeiro. No celular desse barbeiro, enviar `/vincular` ao bot e compartilhar o próprio contato. Conferir a situação “Vinculado”.
+- [ ] Fazer uma reserva com esse barbeiro pelo site e conferir o aviso de nova reserva no Telegram dele. Enviar `/minhaagenda` e conferir que só aparecem os atendimentos dele.
 
 O código temporário de seis dígitos continua existindo para a recuperação no site. Ele é diferente da referência visual de quatro dígitos que foi removida.
 
 ## O que depende da chave da OpenAI
 
-Respostas abertas geradas pela IA e consultas às políticas com busca na base de conhecimento. Os fluxos guiados de agenda e as regras de confirmação funcionam sem essa chave. A chave da OpenAI não substitui o token do Telegram.
+O chat do site depende da chave. Com ela configurada no `.env` local:
+
+- [ ] Fazer outra reserva e, no chat do site, escrever “quero ver meu agendamento”, “quero remarcar” ou “quero cancelar”. Conferir o resumo e a confirmação final.
+- [ ] Testar serviços, preços e busca de vagas no chat, por exemplo “quero corte amanhã depois das 15h”, e conferir que os horários sugeridos existem na agenda.
+- [ ] Fazer uma pergunta sobre políticas, como a tolerância para atraso, e conferir que a resposta cita o documento de origem.
+
+O agendamento pelas telas do site, os menus do Telegram e as regras de confirmação funcionam sem essa chave. A chave da OpenAI não substitui o token do Telegram.
 
 ## Registro do colega
 

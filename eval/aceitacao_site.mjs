@@ -7,7 +7,8 @@
 // nunca o execute contra o banco real da barbearia.
 //
 // Uso: AVAL_STAFF_PASSWORD=... node --no-warnings eval/aceitacao_site.mjs <pasta-de-saida> <banco-de-avaliacao.db>
-// Variáveis opcionais: AVAL_STAFF_USER (padrão: dono), CHROME_PATH.
+// Variáveis opcionais: AVAL_STAFF_USER (padrão: dono), CHROME_PATH e AVAL_CENARIOS (por exemplo, A01,A05),
+// que executa somente os cenários listados. Sem OPENAI_API_KEY, apenas A01 e A05 são executáveis.
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -173,8 +174,15 @@ const barbers = (await api("GET", "/barbers")).data;
 const barberId = (name) => barbers.find((b) => b.name === name).id;
 const meta = { inicio: new Date().toISOString(), datas: { primeira: iso(D_FIRST), segunda: iso(D_SECOND), terca: iso(D_TUE), quarta: iso(D_WED), sabado: iso(D_SAT) } };
 
+// AVAL_CENARIOS=A01,A05 limita a execução aos cenários listados; os demais ficam como não executados.
+const SELECTED = (process.env.AVAL_CENARIOS || "").split(",").map((id) => id.trim().toUpperCase()).filter(Boolean);
 async function run(id, title, expected, body) {
   scenario(id, title, expected);
+  if (SELECTED.length && !SELECTED.includes(id)) {
+    current.notExecuted = "Fora da seleção desta execução (AVAL_CENARIOS).";
+    step(current.notExecuted);
+    return;
+  }
   try { await body(); } catch (error) {
     current.error = String(error.message || error);
     console.log("  ERRO", current.error);
